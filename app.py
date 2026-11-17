@@ -816,7 +816,7 @@ def export_dataframe_csv(
         data=csv_data,
         file_name=filename,
         mime="text/csv",
-        use_container_width=True
+        width="stretch"
     )
 
 
@@ -2222,7 +2222,7 @@ def page_dtc_diagnosis():
     if not results.empty:
         st.markdown("### Definitii DTC si variante specifice producatorului")
         translated_results = translate_dtc_dataframe(results)
-        st.dataframe(translated_results, use_container_width=True, hide_index=True)
+        st.dataframe(translated_results, width="stretch", hide_index=True)
         description = translated_results.to_string(index=False)
     else:
         description = f"Cod DTC: {current_code}"
@@ -2231,12 +2231,12 @@ def page_dtc_diagnosis():
     if not fixes.empty:
         st.markdown("### Proceduri de remediere – mostra MechanicDB")
         st.caption("Mostra publica limitata. Procedurile trebuie potrivite cu marca, modelul si motorul vehiculului.")
-        st.dataframe(translate_dtc_dataframe(fixes), use_container_width=True, hide_index=True)
+        st.dataframe(translate_dtc_dataframe(fixes), width="stretch", hide_index=True)
 
     parts = search_mechanicdb_parts(current_code)
     if not parts.empty:
         st.markdown("### Piese asociate – mostra MechanicDB")
-        st.dataframe(translate_dtc_dataframe(parts), use_container_width=True, hide_index=True)
+        st.dataframe(translate_dtc_dataframe(parts), width="stretch", hide_index=True)
 
     if fixes.empty:
         st.info(
@@ -2322,7 +2322,7 @@ def page_dtc_search():
 
         st.dataframe(
             translate_dtc_dataframe(results),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -2401,7 +2401,7 @@ def page_vehicle_search():
             f"{len(results)} variante gasite · {model_count} modele · "
             f"{generation_count} generatii"
         )
-        st.dataframe(results, use_container_width=True, hide_index=True)
+        st.dataframe(results, width="stretch", hide_index=True)
         export_dataframe_csv(
             results,
             "catalog_unificat_vehicule.csv",
@@ -2543,7 +2543,7 @@ def page_engine_data():
 
         st.dataframe(
             results,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -2658,7 +2658,7 @@ def page_maintenance():
 
         st.dataframe(
             records,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -2785,7 +2785,7 @@ def page_advanced_obd():
 
             st.dataframe(
                 df,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
 
@@ -2806,7 +2806,7 @@ def page_advanced_obd():
 
         st.dataframe(
             measurements,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -2932,7 +2932,7 @@ def page_parts():
 
         st.dataframe(
             filtered,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -3088,7 +3088,7 @@ def page_repairs():
 
         st.dataframe(
             filtered,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -3393,7 +3393,7 @@ def page_database_sources():
 
     st.subheader("Descarcare cataloage")
 
-    if st.button("Descarca / actualizeaza baza de coduri DTC", use_container_width=True):
+    if st.button("Descarca / actualizeaza baza de coduri DTC", width="stretch"):
         with st.spinner("Se descarca baza DTC externa..."):
             success, message = ensure_external_database(
                 DTC_DB_PATH,
@@ -3406,7 +3406,7 @@ def page_database_sources():
         else:
             st.error("Descarcarea bazei DTC a esuat: " + message)
 
-    if st.button("Descarca / actualizeaza catalogul explicativ OBDEX (9.500+ coduri)", use_container_width=True):
+    if st.button("Descarca / actualizeaza catalogul explicativ OBDEX (9.500+ coduri)", width="stretch"):
         with st.spinner("Se descarca catalogul explicativ OBDEX..."):
             success, message = download_obdex_dataset(force=True)
         if success:
@@ -3415,7 +3415,7 @@ def page_database_sources():
         else:
             st.error(message)
 
-    if st.button("Descarca mostrele publice MechanicDB", use_container_width=True):
+    if st.button("Descarca mostrele publice MechanicDB", width="stretch"):
         with st.spinner("Se descarca procedurile si piesele MechanicDB..."):
             fixes_ok, fixes_msg = download_text_dataset(
                 MECHANICDB_FIXES_URL,
@@ -3436,7 +3436,7 @@ def page_database_sources():
 
     if st.button(
         "Descarca / actualizeaza VehiclesDB",
-        use_container_width=True
+        width="stretch"
     ):
 
         with st.spinner("Se descarca VehiclesDB..."):
@@ -3455,7 +3455,7 @@ def page_database_sources():
 
     if st.button(
         "Descarca / actualizeaza catalogul de motoare",
-        use_container_width=True
+        width="stretch"
     ):
 
         with st.spinner("Se descarca baza de motoare..."):
@@ -3568,7 +3568,7 @@ def page_database_sources():
 
         st.dataframe(
             sources,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -3610,7 +3610,7 @@ def main():
         if st.sidebar.button(
             page,
             key=f"adp_sidebar_navigation_button_{index}",
-            use_container_width=True,
+            width="stretch",
             type=(
                 "primary"
                 if st.session_state["active_page"] == page
@@ -3628,7 +3628,7 @@ def main():
     if st.sidebar.button(
         "Reincarca aplicatia",
         key="adp_reload_application",
-        use_container_width=True
+        width="stretch"
     ):
         st.cache_data.clear()
         st.cache_resource.clear()
