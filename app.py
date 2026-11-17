@@ -2764,29 +2764,31 @@ def main():
     st.sidebar.title("🚗 Auto Diagnosis Pro")
     st.sidebar.caption("Versiunea " + APP_VERSION)
     st.sidebar.divider()
-
     st.sidebar.subheader("Meniu principal")
 
-    for page in PAGES:
+    for index, page in enumerate(PAGES):
         if st.sidebar.button(
             page,
-            key="menu_" + str(PAGES.index(page)),
+            key=f"adp_sidebar_navigation_button_{index}",
             use_container_width=True,
-            type="primary" if st.session_state["active_page"] == page else "secondary"
+            type=(
+                "primary"
+                if st.session_state["active_page"] == page
+                else "secondary"
+            )
         ):
             st.session_state["active_page"] = page
             st.rerun()
 
     st.sidebar.divider()
-
     st.sidebar.caption(
         "Platforma de asistenta pentru diagnosticare auto."
     )
 
     if st.sidebar.button(
         "Reincarca aplicatia",
-        use_container_width=True,
-        key="reload_app"
+        key="adp_reload_application",
+        use_container_width=True
     ):
         st.cache_data.clear()
         st.cache_resource.clear()
@@ -2796,40 +2798,32 @@ def main():
 
     if selected_page == "🏠 Dashboard":
         page_dashboard()
-
     elif selected_page == "🔎 Diagnosticare DTC":
         page_dtc_diagnosis()
-
     elif selected_page == "📚 Biblioteca DTC":
         page_dtc_search()
-
     elif selected_page == "🚘 Catalog vehicule":
         page_vehicle_search()
-
     elif selected_page == "⚙️ Date tehnice motor":
         page_engine_data()
-
     elif selected_page == "🛠️ Intretinere si service":
         page_maintenance()
-
     elif selected_page == "📊 Diagnosticare OBD-II":
         page_advanced_obd()
-
     elif selected_page == "🔧 Piese si compatibilitate":
         page_parts()
-
     elif selected_page == "📋 Cazuri de reparatii":
         page_repairs()
-
     elif selected_page == "📖 Documentatie tehnica":
         page_workshop_reference()
-
     elif selected_page == "🗄️ Baze de date si surse":
         page_database_sources()
 
 
 if __name__ == "__main__":
     main()
+
+
 
 # ============================================================
 # PORNIRE APLICATIE
