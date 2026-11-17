@@ -1245,10 +1245,10 @@ def search_engine_catalog(
             + f" JOIN models mo ON "
             f"mo.{quote_identifier(model_make_id)} = "
             f"mk.{quote_identifier(make_id)}"
-            + f" JOIN generations g ON "
+            + f" LEFT JOIN generations g ON "
             f"g.{quote_identifier(gen_model_id)} = "
             f"mo.{quote_identifier(model_id)}"
-            + f" JOIN engines e ON "
+            + f" LEFT JOIN engines e ON "
             f"e.{quote_identifier(engine_gen_id)} = "
             f"g.{quote_identifier(gen_id)}"
         )
@@ -2406,104 +2406,94 @@ def page_engine_data():
 
     page_header(
         "Date tehnice motor",
-        "Cauta generatii, motorizari si specificatii."
+        "Cauta modele, generatii si toate motoriz arile disponibile in catalog."
     )
 
     status, message = get_engine_database_status()
-
     if not status:
-
         st.warning(message)
-
-        if st.button("Descarca baza de motoare"):
-
+        if st.button("Descarca baza de motoare", type="primary"):
             with st.spinner("Se descarca baza de motoare..."):
-
                 success, download_message = ensure_external_database(
-                    ENGINES_DB_PATH,
-                    ENGINES_DB_URL,
-                    [
-                        "makes",
-                        "models",
-                        "generations",
-                        "engines"
-                    ]
+                    ENGINES_DB_PATH, ENGINES_DB_URL,
+                    ["makes", "models", "generations", "engines"]
                 )
-
             if success:
                 st.success(download_message)
                 st.rerun()
             else:
                 st.error(download_message)
-
         return
 
+    makes = get_engine_catalog_makes()
+    if not makes:
+        st.error("Nu pot citi lista de marci din catalogul de motoare.")
+        return
+
+    st.caption(
+        f"Marci disponibile in sursa: {len(makes)}. "
+        "Selectarea marcii foloseste direct baza cu modele, generatii si motoare."
+    )
+
     col1, col2 = st.columns(2)
-
     with col1:
-        make = st.text_input("Marca")
-
-        model = st.text_input("Model")
-
+        make = st.selectbox(
+            "Marca", [""] + makes,
+            format_func=lambda value: "Toate marcile" if value == "" else value,
+            key="engine_data_make"
+        )
+        model = st.text_input(
+            "Model (poti introduce si o parte din nume)",
+            placeholder="Exemplu: A4, Seria 3, Golf",
+            key="engine_data_model"
+        )
     with col2:
-        year = st.text_input("An fabricatie")
-
+        year = st.text_input("An fabricatie", placeholder="Exemplu: 2012")
         fuel = st.selectbox(
-            "Combustibil",
-            [
-                "",
-                "Petrol",
-                "Diesel",
-                "Gasoline",
-                "Hybrid",
-                "Electric",
-                "LPG",
-                "CNG"
-            ]
+            "Combustibil", ["", "Petrol", "Diesel", "Gasoline", "Hybrid", "Electric", "LPG", "CNG"],
+            format_func=lambda value: "Toate tipurile" if value == "" else value
         )
 
     engine_search = st.text_input(
-        "Motor, cod motor sau specificatie"
+        "Motor, cod motor sau specificatie",
+        placeholder="Exemplu: 2.0 TDI, EA888, N47"
     )
 
-    if st.button("Cauta motorizari", type="primary"):
-
-        with st.spinner("Se cauta motorizari..."):
-
+    if st.button("Cauta modele si motorizari", type="primary"):
+        with st.spinner("Se cauta in toate tabelele catalogului..."):
             results = search_engine_catalog(
-                make=make,
-                model=model,
-                year=year,
-                fuel=fuel,
+                make=make, model=model, year=year, fuel=fuel,
                 engine_search=engine_search
             )
-
             st.session_state["engine_results"] = results
 
-    results = st.session_state.get(
-        "engine_results",
-        pd.DataFrame()
-    )
-
+    results = st.session_state.get("engine_results", pd.DataFrame())
     if not results.empty:
-
-        st.success(
-            f"Motorizari gasite: {len(results)}"
-        )
-
-        st.dataframe(
-            results,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        export_dataframe_csv(
-            results,
-            "catalog_motoare.csv"
-        )
-
+        engine_label_columns = [
+            column for column in results.columns
+            if column.lower() in {
+                "engines_label", "engines_fuel_type",
+                "engines_displacement_cc", "engines_power_hp"
+            }
+        ]
+        if engine_label_columns and results[engine_label_columns].isna().all().all():
+            st.info(
+                "Modelele sau generatiile au fost gasite, dar sursa nu are "
+                "motorizari asociate pentru aceasta selectie."
+            )
+        st.success(f"Inregistrari gasite: {len(results)}")
+        st.dataframe(results, use_container_width=True, hide_index=True)
+        export_dataframe_csv(results, "catalog_motoare.csv")
     elif "engine_results" in st.session_state:
-        st.info("Nu au fost gasite motorizari.")
+        st.info(
+            "Nu au fost gasite inregistrari. Incearca sa stergi anul, "
+            "combustibilul sau termenul motorului si cauta din nou."
+        )
+
+    st.caption(
+        "Catalogul public nu contine toate motoriz arile pentru toate pietele si anii. "
+        "Valorile lipsa raman necompletate; nu sunt estimate sau inventate."
+    )
 
 
 # ============================================================
