@@ -19,8 +19,12 @@ DATA_DIR = BASE_DIR / "data"
 
 DTC_DB_PATH = DATA_DIR / "dtc_codes.db"
 DIAGNOSIS_DB_PATH = DATA_DIR / "diagnosis.db"
+VEHICLES_DB_PATH = DATA_DIR / "vehicles.db"
 
 DATA_DIR.mkdir(exist_ok=True)
+
+VEHICLES_SOURCE = "https://github.com/vehiclesdb/vehiclesdb"
+
 
 # =====================================================
 # DESIGN
@@ -61,6 +65,21 @@ def get_dtc_connection():
         uri=True,
         check_same_thread=False
     )
+
+
+@st.cache_resource
+def get_vehicles_connection():
+    if not VEHICLES_DB_PATH.exists():
+        return None
+
+    try:
+        return sqlite3.connect(
+            f"file:{VEHICLES_DB_PATH}?mode=ro",
+            uri=True,
+            check_same_thread=False
+        )
+    except sqlite3.Error:
+        return None
 
 
 @st.cache_resource
@@ -335,6 +354,208 @@ def get_manufacturers():
 
 
 # =====================================================
+# VEHICLE DATABASE FUNCTIONS
+# =====================================================
+
+def get_vehicle_statistics():
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return 0, 0
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM makes
+            WHERE kind = 'car'
+        """)
+        makes_count = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM models
+            WHERE kind = 'car'
+        """)
+        models_count = cursor.fetchone()[0]
+
+        return makes_count, models_count
+
+    except sqlite3.Error:
+        return 0, 0
+
+
+def get_vehicle_makes():
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return []
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, name
+            FROM makes
+            WHERE kind = 'car'
+            ORDER BY name COLLATE NOCASE
+        """)
+
+        return cursor.fetchall()
+
+    except sqlite3.Error:
+        return []
+
+
+def get_vehicle_models(make_id):
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return []
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, name
+            FROM models
+            WHERE kind = 'car'
+              AND make_id = ?
+            ORDER BY name COLLATE NOCASE
+        """, (make_id,))
+
+        return cursor.fetchall()
+
+    except sqlite3.Error:
+        return []
+
+
+def get_vehicle_countries():
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return []
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT DISTINCT country
+            FROM availability
+            WHERE kind = 'car'
+            ORDER BY country
+        """)
+
+        return [
+            row[0].upper()
+            for row in cursor.fetchall()
+            if row[0]
+        ]
+
+    except sqlite3.Error:
+        return []
+
+
+def search_vehicles(make_id=None, model_id=None,
+                    year=None, country=None):
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return pd.DataFrame()
+
+    query = """
+        SELECT
+            models.id AS model_id,
+            makes.name AS make,
+            models.name AS model,
+            models.body_types AS body_types,
+            models.regions AS regions,
+            models.global_popularity_decile AS popularity,
+            models.lifecycle_status AS lifecycle_status,
+            models.year_start AS year_start,
+            models.year_end AS year_end,
+            models.year_start_planned AS year_start_planned,
+            models.year_end_planned AS year_end_planned
+        FROM models
+        INNER JOIN makes
+            ON models.make_id = makes.id
+           AND models.kind = makes.kind
+        WHERE models.kind = 'car'
+    """
+
+    params = []
+
+    if make_id:
+        query += " AND models.make_id = ?"
+        params.append(make_id)
+
+    if model_id:
+        query += " AND models.id = ?"
+        params.append(model_id)
+
+    if year:
+        query += """
+            AND (
+                models.year_start IS NULL
+                OR models.year_start <= ?
+            )
+            AND (
+                models.year_end IS NULL
+                OR models.year_end >= ?
+            )
+        """
+        params.extend([year, year])
+
+    if country:
+        query += """
+            AND EXISTS (
+                SELECT 1
+                FROM availability
+                WHERE availability.model_id = models.id
+                  AND availability.kind = models.kind
+                  AND UPPER(availability.country) = ?
+            )
+        """
+        params.append(country.upper())
+
+    query += " ORDER BY makes.name, models.name LIMIT 500"
+
+    try:
+        return pd.read_sql_query(
+            query,
+            conn,
+            params=params
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_vehicle_availability(model_id):
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return pd.DataFrame()
+
+    try:
+        return pd.read_sql_query("""
+            SELECT country, evidence, source
+            FROM availability
+            WHERE model_id = ?
+              AND kind = 'car'
+            ORDER BY country
+        """, conn, params=(model_id,))
+    except Exception:
+        return pd.DataFrame()
+
+
+# =====================================================
 # SIDEBAR
 # =====================================================
 
@@ -363,6 +584,11 @@ else:
 if DIAGNOSIS_DB_PATH.exists():
     st.sidebar.success("Diagnosis Database: OK")
 
+if VEHICLES_DB_PATH.exists():
+    st.sidebar.success("Vehicle Database: OK")
+else:
+    st.sidebar.error("Vehicle Database: Missing")
+
 st.sidebar.caption("Auto Diagnosis Pro")
 
 
@@ -380,6 +606,7 @@ if page == "Dashboard":
     st.write("Platformă de diagnostic și informații auto.")
 
     definitions, codes = get_statistics()
+    makes_count, models_count = get_vehicle_statistics()
 
     conn = get_diagnosis_connection()
     cursor = conn.cursor()
@@ -391,6 +618,15 @@ if page == "Dashboard":
     c1.metric("Coduri DTC unice", f"{codes:,}")
     c2.metric("Definiții DTC", f"{definitions:,}")
     c3.metric("Fișe de diagnostic", diagnosis_count)
+
+    st.markdown("---")
+
+    st.subheader("Baza de date vehicule")
+
+    v1, v2 = st.columns(2)
+
+    v1.metric("Mărci auto", f"{makes_count:,}")
+    v2.metric("Modele auto", f"{models_count:,}")
 
     st.markdown("---")
 
@@ -594,41 +830,264 @@ elif page == "Vehicle Search":
 
     st.title("🚗 Vehicle Search")
 
-    st.info(
-        "Modulul de căutare după vehicul este pregătit "
-        "pentru integrarea bazei de date cu mărci, modele și motoare."
-    )
+    conn = get_vehicles_connection()
 
-    col1, col2 = st.columns(2)
+    if conn is None:
 
-    with col1:
-        brand = st.selectbox(
-            "Marcă",
-            [
-                "BMW", "Mercedes-Benz", "Audi",
-                "Volkswagen", "Skoda", "Seat",
-                "Ford", "Opel", "Renault",
-                "Peugeot", "Toyota", "Volvo",
-                "Other"
-            ]
+        st.error("Nu am putut deschide vehicles.db.")
+
+        st.write(
+            "Verifică dacă fișierul vehicles.db există în folderul data."
         )
 
-    with col2:
-        model = st.text_input("Model", placeholder="Exemplu: 320d")
+    else:
 
-    engine = st.text_input(
-        "Motor / Cod motor",
-        placeholder="Exemplu: B47"
+        makes = get_vehicle_makes()
+        countries = get_vehicle_countries()
+
+        if not makes:
+
+            st.error(
+                "Nu am găsit mărcile auto în baza vehicles.db. "
+                "Este posibil ca structura fișierului să fie diferită."
+            )
+
+        else:
+
+            st.write(
+                "Selectează marca, modelul și anul pentru a căuta vehiculul."
+            )
+
+            make_options = [
+                ("", "Toate mărcile")
+            ] + makes
+
+            selected_make = st.selectbox(
+                "Marcă auto",
+                make_options,
+                format_func=lambda item: item[1]
+            )
+
+            make_id = selected_make[0] if selected_make[0] else None
+
+            model_options = [("", "Toate modelele")]
+
+            if make_id:
+                model_options += get_vehicle_models(make_id)
+
+            selected_model = st.selectbox(
+                "Model",
+                model_options,
+                format_func=lambda item: item[1]
+            )
+
+            model_id = (
+                selected_model[0]
+                if selected_model[0]
+                else None
+            )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                selected_year = st.number_input(
+                    "An fabricație (opțional)",
+                    min_value=1950,
+                    max_value=2035,
+                    value=None,
+                    step=1,
+                    placeholder="Lasă necompletat pentru toți anii"
+                )
+
+            with col2:
+
+                country_options = ["Toate țările"] + countries
+
+                selected_country = st.selectbox(
+                    "Țara în care modelul este documentat",
+                    country_options
+                )
+
+            country_filter = (
+                None
+                if selected_country == "Toate țările"
+                else selected_country
+            )
+
+            st.markdown("---")
+
+            if st.button("🔎 Caută vehicul", type="primary"):
+
+                year_filter = (
+                    int(selected_year)
+                    if selected_year is not None
+                    else None
+                )
+
+                results = search_vehicles(
+                    make_id=make_id,
+                    model_id=model_id,
+                    year=year_filter,
+                    country=country_filter
+                )
+
+                st.session_state["vehicle_results"] = results
+
+                st.session_state["vehicle_search_done"] = True
+
+            if st.session_state.get("vehicle_search_done"):
+
+                results = st.session_state.get(
+                    "vehicle_results",
+                    pd.DataFrame()
+                )
+
+                st.markdown("---")
+
+                if results.empty:
+
+                    st.warning(
+                        "Nu am găsit rezultate pentru criteriile selectate."
+                    )
+
+                else:
+
+                    st.success(
+                        f"Am găsit {len(results)} rezultate."
+                    )
+
+                    display_df = results.rename(columns={
+                        "make": "Marcă",
+                        "model": "Model",
+                        "body_types": "Caroserie",
+                        "regions": "Regiuni",
+                        "popularity": "Popularitate",
+                        "lifecycle_status": "Status",
+                        "year_start": "Început producție",
+                        "year_end": "Sfârșit producție",
+                        "year_start_planned": "Început planificat",
+                        "year_end_planned": "Sfârșit planificat"
+                    })
+
+                    columns_to_show = [
+                        "Marcă",
+                        "Model",
+                        "Caroserie",
+                        "Început producție",
+                        "Sfârșit producție",
+                        "Status"
+                    ]
+
+                    st.dataframe(
+                        display_df[columns_to_show],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    st.caption(
+                        "Anii afișați reprezintă informații despre "
+                        "ciclul de producție atunci când sunt disponibile. "
+                        "Nu sunt o confirmare a anului exact al unui vehicul."
+                    )
+
+                    st.markdown("---")
+                    st.subheader("Detalii vehicul")
+
+                    selected_result = st.selectbox(
+                        "Alege modelul pentru detalii",
+                        range(len(results)),
+                        format_func=lambda i: (
+                            f"{results.iloc[i]['make']} "
+                            f"{results.iloc[i]['model']}"
+                        )
+                    )
+
+                    vehicle = results.iloc[selected_result]
+
+                    st.subheader(
+                        f"{vehicle['make']} {vehicle['model']}"
+                    )
+
+                    d1, d2, d3 = st.columns(3)
+
+                    d1.metric(
+                        "Început producție",
+                        vehicle["year_start"]
+                        if pd.notna(vehicle["year_start"])
+                        else "Necunoscut"
+                    )
+
+                    d2.metric(
+                        "Sfârșit producție",
+                        vehicle["year_end"]
+                        if pd.notna(vehicle["year_end"])
+                        else "Necunoscut / în producție"
+                    )
+
+                    d3.metric(
+                        "Status",
+                        vehicle["lifecycle_status"]
+                        if pd.notna(vehicle["lifecycle_status"])
+                        else "Nespecificat"
+                    )
+
+                    if pd.notna(vehicle["body_types"]):
+                        st.write(
+                            "**Tipuri de caroserie:**",
+                            vehicle["body_types"]
+                        )
+
+                    if pd.notna(vehicle["regions"]):
+                        st.write(
+                            "**Regiuni:**",
+                            vehicle["regions"]
+                        )
+
+                    if pd.notna(vehicle["popularity"]):
+                        st.write(
+                            "**Indice popularitate:**",
+                            vehicle["popularity"]
+                        )
+
+                    availability = get_vehicle_availability(
+                        vehicle["model_id"]
+                    )
+
+                    st.markdown("---")
+                    st.subheader("Disponibilitate pe țări")
+
+                    if availability.empty:
+
+                        st.info(
+                            "Nu există informații de disponibilitate "
+                            "pentru acest model."
+                        )
+
+                    else:
+
+                        st.dataframe(
+                            availability,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
+                    st.caption(
+                        "Datele despre vehicule sunt furnizate de "
+                        "VehiclesDB, sub licență CC BY 4.0."
+                    )
+
+                    st.markdown(
+                        f"[VehiclesDB — sursa datelor]({VEHICLES_SOURCE})"
+                    )
+
+    st.markdown("---")
+
+    st.caption(
+        "Baza actuală oferă informații despre mărci și modele. "
+        "Codurile de motor, generațiile detaliate și ECU vor fi "
+        "integrate într-o etapă viitoare."
     )
-
-    year = st.text_input("An fabricație")
-
-    if st.button("Caută vehicul"):
-
-        st.warning(
-            "Baza tehnică pentru vehicule nu este încă integrată. "
-            "Datele introduse nu sunt salvate."
-        )
 
 
 # =====================================================
@@ -710,7 +1169,32 @@ elif page == "Database":
         hide_index=True
     )
 
+    st.markdown("---")
+
+    st.subheader("Vehicle Database")
+
+    if VEHICLES_DB_PATH.exists():
+
+        makes_count, models_count = get_vehicle_statistics()
+
+        v1, v2 = st.columns(2)
+
+        v1.metric("Mărci auto", f"{makes_count:,}")
+        v2.metric("Modele auto", f"{models_count:,}")
+
+        st.success("vehicles.db este disponibilă.")
+
+        st.markdown(
+            f"[Sursa datelor: VehiclesDB]({VEHICLES_SOURCE})"
+        )
+
+    else:
+
+        st.error("vehicles.db nu există în folderul data.")
+
+    st.markdown("---")
+
     st.caption(
-        "Baza DTC este separată de baza de diagnostic. "
-        "Fișele suplimentare nu modifică definițiile originale."
+        "Baza DTC, baza de diagnostic și baza de vehicule "
+        "sunt fișiere separate. Datele originale nu sunt modificate."
     )
