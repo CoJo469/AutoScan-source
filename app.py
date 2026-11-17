@@ -1501,6 +1501,38 @@ def obdex_text(value):
     return clean_text(value)
 
 
+def translate_dtc_dataframe(frame):
+    """Traduce in romana valorile text si antetele tabelelor externe."""
+    if frame is None or frame.empty:
+        return frame
+    column_names = {
+        "code": "Cod", "dtc": "Cod DTC", "dtc_code": "Cod DTC",
+        "trouble_code": "Cod eroare", "description": "Descriere",
+        "title": "Titlu", "name": "Denumire", "fix_title": "Procedura de reparatie",
+        "fix_description": "Detalii reparatie", "repair": "Reparatie",
+        "cause": "Cauza", "symptom": "Simptom", "symptoms": "Simptome",
+        "part_name": "Piesa", "part": "Piesa", "category": "Categorie",
+        "system": "Sistem", "manufacturer": "Producator", "make": "Marca",
+        "model": "Model", "year": "An", "source": "Sursa",
+        "fix_id": "ID procedura", "id": "ID"
+    }
+    translated = frame.copy()
+    translated.columns = [
+        column_names.get(str(col).strip().lower(), translate_dtc_to_romanian(str(col)))
+        for col in translated.columns
+    ]
+    for col in translated.columns:
+        translated[col] = translated[col].map(
+            lambda value: (
+                value if pd.isna(value) or not isinstance(value, str)
+                or value.strip().startswith(("http://", "https://"))
+                or re.fullmatch(r"[PBCU][0-3][0-9A-F]{3}", value.strip().upper())
+                else translate_dtc_to_romanian(value)
+            )
+        )
+    return translated
+
+
 def display_obdex_diagnosis(record):
     """Afiseaza explicatiile si recomandarile din inregistrarea OBDEX."""
     title = obdex_text(record.get("title"))
@@ -1517,7 +1549,7 @@ def display_obdex_diagnosis(record):
     if components:
         st.markdown("**Componente implicate**")
         st.write(", ".join(
-            str(item).replace("_", " ").capitalize()
+            obdex_text(str(item).replace("_", " ").capitalize())
             for item in components
         ))
 
@@ -1874,19 +1906,20 @@ def page_dtc_diagnosis():
         display_obdex_diagnosis(obdex_record)
     elif local:
         st.markdown("### Diagnostic local si sugestii de rezolvare")
-        st.markdown(f"**{local.get('title', '')}**")
-        st.write("**Cauze posibile:** " + (local.get("possible_causes") or "Nu exista date."))
-        st.write("**Simptome:** " + (local.get("symptoms") or "Nu exista date."))
-        st.write("**Verificari recomandate:** " + (local.get("checks") or "Nu exista date."))
-        st.write("**Recomandari de reparatie:** " + (local.get("repair_suggestions") or "Nu exista date."))
+        st.markdown(f"**{translate_dtc_to_romanian(local.get('title', ''))}**")
+        st.write("**Cauze posibile:** " + translate_dtc_to_romanian(local.get("possible_causes") or "Nu exista date."))
+        st.write("**Simptome:** " + translate_dtc_to_romanian(local.get("symptoms") or "Nu exista date."))
+        st.write("**Verificari recomandate:** " + translate_dtc_to_romanian(local.get("checks") or "Nu exista date."))
+        st.write("**Recomandari de reparatie:** " + translate_dtc_to_romanian(local.get("repair_suggestions") or "Nu exista date."))
         st.caption(f"Sursa: {local.get('source', 'Baza interna')} | Nivel: {local.get('confidence', 'Orientativ')}")
     else:
         st.info("Nu exista o fisa explicativa detaliata disponibila pentru acest cod in sursele conectate.")
 
     if not results.empty:
         st.markdown("### Definitii DTC si variante specifice producatorului")
-        st.dataframe(results, use_container_width=True, hide_index=True)
-        description = results.to_string(index=False)
+        translated_results = translate_dtc_dataframe(results)
+        st.dataframe(translated_results, use_container_width=True, hide_index=True)
+        description = translated_results.to_string(index=False)
     else:
         description = f"Cod DTC: {current_code}"
 
@@ -1894,12 +1927,12 @@ def page_dtc_diagnosis():
     if not fixes.empty:
         st.markdown("### Proceduri de remediere – mostra MechanicDB")
         st.caption("Mostra publica limitata. Procedurile trebuie potrivite cu marca, modelul si motorul vehiculului.")
-        st.dataframe(fixes, use_container_width=True, hide_index=True)
+        st.dataframe(translate_dtc_dataframe(fixes), use_container_width=True, hide_index=True)
 
     parts = search_mechanicdb_parts(current_code)
     if not parts.empty:
         st.markdown("### Piese asociate – mostra MechanicDB")
-        st.dataframe(parts, use_container_width=True, hide_index=True)
+        st.dataframe(translate_dtc_dataframe(parts), use_container_width=True, hide_index=True)
 
     if not obdex_record and not local and results.empty and fixes.empty:
         st.warning(
