@@ -4285,9 +4285,7 @@ def main():
     if current_page not in PAGES:
         current_page = PAGES[0]
 
-    # Sincronizeaza meniul cu pagina selectata din alte module.
-    if st.session_state.get("main_navigation") != current_page:
-        st.session_state["main_navigation"] = current_page
+
 
     st.sidebar.title("🚗 Auto Diagnosis Pro")
     st.sidebar.caption("Platforma de diagnosticare auto")
