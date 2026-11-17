@@ -1459,12 +1459,45 @@ def get_obdex_record(code):
     return load_obdex_dataset().get(code)
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def translate_dtc_to_romanian(value):
+    """Traduce textele sursei DTC in romana si memoreaza rezultatul."""
+    text_value = clean_text(value)
+    if not text_value:
+        return ""
+    try:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={
+                "client": "gtx",
+                "sl": "auto",
+                "tl": "ro",
+                "dt": "t",
+                "q": text_value
+            },
+            timeout=(8, 20)
+        )
+        response.raise_for_status()
+        translated = response.json()
+        result = "".join(
+            part[0] for part in translated[0]
+            if isinstance(part, list) and part and part[0]
+        )
+        return result or text_value
+    except Exception:
+        # Pastreaza informatia originala daca serviciul de traducere nu raspunde.
+        return text_value
+
+
 def obdex_text(value):
-    """Alege textul englez, cu fallback la germana."""
+    """Extrage textul disponibil si il afiseaza in romana."""
     if isinstance(value, dict):
-        return clean_text(value.get("en") or value.get("de") or value.get("ro"))
+        raw = value.get("ro") or value.get("en") or value.get("de") or ""
+        return translate_dtc_to_romanian(raw)
     if isinstance(value, list):
         return ", ".join(obdex_text(item) for item in value if item)
+    if isinstance(value, str):
+        return translate_dtc_to_romanian(value)
     return clean_text(value)
 
 
@@ -1478,7 +1511,7 @@ def display_obdex_diagnosis(record):
         st.markdown(f"**{title}**")
     if description:
         st.write(description)
-        st.caption("Descrierea este afisata in limba originala a sursei (engleza; germana daca engleza lipseste).")
+        st.caption("Text tradus automat in romana. Denumirile standardizate ale codurilor si componentelor pot ramane in forma tehnica originala.")
 
     components = record.get("affected_components") or []
     if components:
@@ -1494,7 +1527,7 @@ def display_obdex_diagnosis(record):
         for cause in causes:
             if isinstance(cause, dict):
                 label = obdex_text(cause.get("label") or cause.get("id"))
-                likelihood = clean_text(cause.get("likelihood"))
+                likelihood = obdex_text(cause.get("likelihood", ""))
                 suffix = f" — probabilitate: {likelihood}" if likelihood else ""
                 st.write(f"- {label}{suffix}")
 
@@ -1514,14 +1547,14 @@ def display_obdex_diagnosis(record):
         }
         difficulty = difficulty_names.get(
             str(repair.get("difficulty", "")).lower(),
-            clean_text(repair.get("difficulty"))
+            obdex_text(repair.get("difficulty", ""))
         )
         if difficulty:
             st.write(f"- Dificultate: {difficulty}")
         if repair.get("diy_possible") is not None:
             st.write(
                 "- Reparatie DIY posibila: "
-                + ("Da" if repair.get("diy_possible") else "Nu; recomandat service")
+                + ("Da" if repair.get("diy_possible") else "Nu; service recomandat")
             )
         cost = repair.get("estimated_cost_eur")
         if isinstance(cost, list) and len(cost) >= 2:
@@ -1559,7 +1592,7 @@ def display_obdex_diagnosis(record):
     if record.get("reviewed"):
         st.caption(f"Data ultimei revizuiri in sursa: {record.get('reviewed')}")
 
-    st.caption("Sursa datelor: OBDEX, licenta CC0-1.0. Estimarile sunt orientative si trebuie confirmate pentru vehiculul concret.")
+    st.caption("Sursa datelor: OBDEX (CC0-1.0). Traducerea este automata; estimarile sunt orientative si trebuie confirmate pentru vehiculul concret.")
 
 
 # ============================================================
