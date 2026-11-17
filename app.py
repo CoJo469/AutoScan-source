@@ -1245,10 +1245,10 @@ def search_engine_catalog(
             + f" JOIN models mo ON "
             f"mo.{quote_identifier(model_make_id)} = "
             f"mk.{quote_identifier(make_id)}"
-            + f" JOIN generations g ON "
+            + f" LEFT JOIN generations g ON "
             f"g.{quote_identifier(gen_model_id)} = "
             f"mo.{quote_identifier(model_id)}"
-            + f" JOIN engines e ON "
+            + f" LEFT JOIN engines e ON "
             f"e.{quote_identifier(engine_gen_id)} = "
             f"g.{quote_identifier(gen_id)}"
         )
@@ -2487,8 +2487,22 @@ def page_engine_data():
 
     if not results.empty:
 
-        st.success(
-            f"Motorizari gasite: {len(results)}"
+        engine_rows = results
+        engine_col = next(
+            (col for col in engine_rows.columns if col.lower() in (
+                "engines_name", "engines_label", "engines_engine_code",
+                "engines_code", "engines_displacement_cc"
+            )),
+            None
+        )
+        if engine_col:
+            st.success(f"Variante de vehicul gasite: {len(results)}")
+        else:
+            st.success(f"Variante de vehicul gasite: {len(results)}")
+        st.caption(
+            "Catalogul afiseaza si modelele/generatiile fara motorizari asociate, "
+            "pentru a nu le elimina din rezultate. Campurile goale indica date "
+            "care nu exista in sursa, nu o eroare de traducere."
         )
 
         st.dataframe(
