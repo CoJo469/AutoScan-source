@@ -2320,18 +2320,44 @@ def page_vehicle_search():
         st.info("Nu exista rezultate pentru cautarea efectuata.")
 
     if selected_make != "Toate" and model_search.strip():
-        engine_status, _ = get_engine_database_status()
+        st.markdown("### Generatii si variante ale modelului")
+        engine_status, engine_message = get_engine_database_status()
+
         if not engine_status:
-            st.info(
-                "Pentru lista completa de generatii si motorizari, "
-                "descarca si catalogul de motoare din pagina «Baze de date si surse»."
+            st.warning(
+                "Catalogul care contine generatiile si motorizarea nu este instalat. "
+                "Pana acum era afisata doar denumirea simpla a modelului din VehiclesDB."
             )
+            if st.button(
+                "Descarca acum catalogul complet cu generatii si motoare",
+                key="download_vehicle_generations_catalog",
+                type="primary",
+                use_container_width=True
+            ):
+                with st.spinner(
+                    "Se descarca baza completa: marci, modele, generatii si motoare. "
+                    "Prima descarcare poate dura cateva minute..."
+                ):
+                    success, download_message = ensure_external_database(
+                        ENGINES_DB_PATH,
+                        ENGINES_DB_URL,
+                        ["makes", "models", "generations", "engines"]
+                    )
+                if success:
+                    st.success(
+                        "Catalogul complet a fost instalat. Se reincarca lista de generatii."
+                    )
+                    st.rerun()
+                else:
+                    st.error(
+                        "Nu am putut instala catalogul de generatii: "
+                        + download_message
+                    )
         else:
             generations = search_vehicle_generations(
                 make=selected_make,
                 model=model_search.strip()
             )
-            st.markdown("### Generatii si variante ale modelului")
             if not generations.empty:
                 st.success(f"Generatii gasite: {len(generations)}")
                 st.dataframe(generations, use_container_width=True, hide_index=True)
@@ -2341,8 +2367,10 @@ def page_vehicle_search():
                     "Descarca toate generatiile CSV"
                 )
             else:
-                st.info(
-                    "Nu au fost gasite generatii pentru aceasta combinatie in catalogul de motoare."
+                st.warning(
+                    f"Catalogul de generatii este instalat, dar nu a returnat "
+                    f"generatii pentru {selected_make} {model_search}. "
+                    "Verifica marca si modelul sau foloseste pagina «Date tehnice motor»."
                 )
 
 
