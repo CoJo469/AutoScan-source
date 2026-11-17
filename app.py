@@ -1811,7 +1811,7 @@ def page_dtc_diagnosis():
 
     if st.button("Analizeaza codul DTC", type="primary"):
         normalized_code = re.sub(r"[^A-Z0-9]", "", code)
-        if len(normalized_code) != 5 or normalized_code[0] not in "PBCU" or not normalized_code[1:].isdigit():
+        if not re.fullmatch(r"[PBCU][0-3][0-9A-F]{3}", normalized_code):
             st.warning("Introdu un cod OBD-II valid, de exemplu P0420.")
         else:
             st.session_state["dtc_current_code"] = normalized_code
