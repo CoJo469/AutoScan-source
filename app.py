@@ -71,6 +71,10 @@ MECHANICDB_PARTS_URL = (
     "main/replacement_parts.csv"
 )
 
+# Baza explicativa OBDEX: 9.533 coduri OBD-II generice cu cauze, simptome si estimari.
+OBDEX_JSON_URL = "https://foerbsnavi.github.io/OBDex/generic.min.json"
+OBDEX_PATH = DATA_DIR / "obdex_generic.json"
+
 # ============================================================
 # INTERFATA
 # ============================================================
@@ -1380,6 +1384,184 @@ def search_mechanicdb_parts(code, limit=100):
     return parts.loc[mask].head(limit)
 
 
+def download_obdex_dataset(force=False):
+    """Descarca si valideaza catalogul explicativ OBDEX (date CC0)."""
+    destination = Path(OBDEX_PATH)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if destination.exists() and destination.stat().st_size > 100000 and not force:
+        return True, "Catalogul explicativ OBDEX exista deja."
+
+    temporary = destination.with_suffix(".json.download")
+    try:
+        response = requests.get(
+            OBDEX_JSON_URL,
+            timeout=(20, 180),
+            headers={"User-Agent": "AutoDiagnosisPro/2.0"}
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        if isinstance(payload, dict):
+            payload = payload.get("codes", payload.get("data", payload))
+
+        if not isinstance(payload, list) or len(payload) < 5000:
+            raise ValueError("Catalogul primit nu contine lista asteptata de coduri.")
+
+        sample = next((item for item in payload if isinstance(item, dict) and item.get("code")), None)
+        if not sample or not any(key in sample for key in ("common_causes", "symptoms", "description")):
+            raise ValueError("Structura catalogului nu contine campurile explicative necesare.")
+
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8"
+        )
+        temporary.replace(destination)
+
+        try:
+            load_obdex_dataset.clear()
+        except Exception:
+            pass
+
+        return True, f"Catalog explicativ instalat: {len(payload):,} inregistrari."
+    except Exception as exc:
+        temporary.unlink(missing_ok=True)
+        return False, f"Nu am putut descarca OBDEX: {exc}"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_obdex_dataset():
+    """Incarca in memorie catalogul OBDEX si indexeaza codurile."""
+    path = Path(OBDEX_PATH)
+    if not path.exists():
+        return {}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload = payload.get("codes", payload.get("data", []))
+        if not isinstance(payload, list):
+            return {}
+
+        return {
+            str(item.get("code", "")).upper().strip(): item
+            for item in payload
+            if isinstance(item, dict) and item.get("code")
+        }
+    except Exception:
+        return {}
+
+
+def get_obdex_record(code):
+    code = re.sub(r"[^A-Z0-9]", "", str(code or "").upper())
+    if not code:
+        return None
+    return load_obdex_dataset().get(code)
+
+
+def obdex_text(value):
+    """Alege textul englez, cu fallback la germana."""
+    if isinstance(value, dict):
+        return clean_text(value.get("en") or value.get("de") or value.get("ro"))
+    if isinstance(value, list):
+        return ", ".join(obdex_text(item) for item in value if item)
+    return clean_text(value)
+
+
+def display_obdex_diagnosis(record):
+    """Afiseaza explicatiile si recomandarile din inregistrarea OBDEX."""
+    title = obdex_text(record.get("title"))
+    description = obdex_text(record.get("description"))
+
+    st.markdown("### Explicatie tehnica detaliata")
+    if title:
+        st.markdown(f"**{title}**")
+    if description:
+        st.write(description)
+        st.caption("Descrierea este afisata in limba originala a sursei (engleza; germana daca engleza lipseste).")
+
+    components = record.get("affected_components") or []
+    if components:
+        st.markdown("**Componente implicate**")
+        st.write(", ".join(
+            str(item).replace("_", " ").capitalize()
+            for item in components
+        ))
+
+    causes = record.get("common_causes") or []
+    if causes:
+        st.markdown("**Cauze probabile**")
+        for cause in causes:
+            if isinstance(cause, dict):
+                label = obdex_text(cause.get("label") or cause.get("id"))
+                likelihood = clean_text(cause.get("likelihood"))
+                suffix = f" — probabilitate: {likelihood}" if likelihood else ""
+                st.write(f"- {label}{suffix}")
+
+    symptoms = record.get("symptoms") or []
+    if symptoms:
+        st.markdown("**Simptome posibile**")
+        for symptom in symptoms:
+            st.write("- " + obdex_text(symptom))
+
+    repair = record.get("repair") or {}
+    if repair:
+        st.markdown("**Dificultatea si estimarea reparatiei**")
+        difficulty_names = {
+            "easy": "Usoara",
+            "medium": "Medie",
+            "hard": "Dificila"
+        }
+        difficulty = difficulty_names.get(
+            str(repair.get("difficulty", "")).lower(),
+            clean_text(repair.get("difficulty"))
+        )
+        if difficulty:
+            st.write(f"- Dificultate: {difficulty}")
+        if repair.get("diy_possible") is not None:
+            st.write(
+                "- Reparatie DIY posibila: "
+                + ("Da" if repair.get("diy_possible") else "Nu; recomandat service")
+            )
+        cost = repair.get("estimated_cost_eur")
+        if isinstance(cost, list) and len(cost) >= 2:
+            st.write(f"- Cost estimativ: {cost[0]}–{cost[1]} EUR")
+        hours = repair.get("estimated_hours")
+        if isinstance(hours, list) and len(hours) >= 2:
+            st.write(f"- Timp estimativ de manopera: {hours[0]}–{hours[1]} ore")
+
+    flags = record.get("flags") or {}
+    if flags:
+        st.markdown("**Avertizari si comportament**")
+        flag_names = {
+            "mil": "Aprinde martorul Check Engine",
+            "emissions_relevant": "Poate afecta emisiile",
+            "drive_cycle_required": "Poate necesita ciclu de conducere pentru reverificare",
+            "limp_mode_possible": "Poate activa modul de avarie"
+        }
+        for key, label in flag_names.items():
+            if flags.get(key):
+                st.write("- " + label)
+
+    related = record.get("related_codes") or []
+    if related:
+        st.markdown("**Coduri asociate**")
+        st.write(", ".join(str(code) for code in related))
+
+    sources = record.get("sources") or []
+    if sources:
+        st.markdown("**Surse tehnice**")
+        for source in sources[:12]:
+            source_url = clean_text(source)
+            if source_url.startswith(("https://", "http://")):
+                st.write(source_url)
+
+    if record.get("reviewed"):
+        st.caption(f"Data ultimei revizuiri in sursa: {record.get('reviewed')}")
+
+    st.caption("Sursa datelor: OBDEX, licenta CC0-1.0. Estimarile sunt orientative si trebuie confirmate pentru vehiculul concret.")
+
+
 # ============================================================
 # DIAGNOSTICARE DTC - EXPLICATII SI ISTORIC
 # ============================================================
@@ -1615,12 +1797,12 @@ def page_dtc_diagnosis():
 
     page_header(
         "Diagnosticare DTC",
-        "Introdu codul de eroare pentru explicatii, cauze posibile si verificari recomandate."
+        "Introdu codul de eroare pentru explicatii, cauze posibile, simptome si recomandari."
     )
 
     code = st.text_input(
         "Cod DTC",
-        placeholder="Exemplu: P0300",
+        placeholder="Exemplu: P0420",
         max_chars=10
     ).upper().strip()
 
@@ -1629,13 +1811,20 @@ def page_dtc_diagnosis():
 
     if st.button("Analizeaza codul DTC", type="primary"):
         normalized_code = re.sub(r"[^A-Z0-9]", "", code)
-        if len(normalized_code) != 5 or normalized_code[0] not in "PBCU" or not normalized_code[1:].isdigit():
-            st.warning("Introdu un cod OBD-II valid, de exemplu P0300.")
+        if not re.fullmatch(r"[PBCU][0-3][0-9A-F]{3}", normalized_code):
+            st.warning("Introdu un cod OBD-II valid, de exemplu P0420.")
         else:
             st.session_state["dtc_current_code"] = normalized_code
             st.session_state["dtc_vehicle"] = vehicle
             st.session_state["dtc_engine"] = engine
             st.session_state["dtc_results"] = search_dtc(code=normalized_code)
+
+            if not Path(OBDEX_PATH).exists():
+                with st.spinner("Se descarca prima data catalogul explicativ cu peste 9.500 de coduri..."):
+                    ok, message = download_obdex_dataset()
+                st.session_state["obdex_download_message"] = message
+            else:
+                st.session_state["obdex_download_message"] = "Catalogul explicativ este disponibil."
 
     current_code = st.session_state.get("dtc_current_code", "")
     if not current_code:
@@ -1643,37 +1832,35 @@ def page_dtc_diagnosis():
         return
 
     st.subheader(f"Rezultate pentru {current_code}")
+
+    obdex_record = get_obdex_record(current_code)
     local = lookup_local_diagnosis(current_code)
     results = st.session_state.get("dtc_results", pd.DataFrame())
 
-    if local:
-        st.markdown("### Diagnostic si sugestii de rezolvare")
+    if obdex_record:
+        display_obdex_diagnosis(obdex_record)
+    elif local:
+        st.markdown("### Diagnostic local si sugestii de rezolvare")
         st.markdown(f"**{local.get('title', '')}**")
-        st.markdown("**Cauze posibile**")
-        st.write(local.get("possible_causes") or "Nu exista date.")
-        st.markdown("**Simptome posibile**")
-        st.write(local.get("symptoms") or "Nu exista date.")
-        st.markdown("**Verificari recomandate**")
-        st.write(local.get("checks") or "Nu exista date.")
-        st.markdown("**Recomandari de reparatie**")
-        st.write(local.get("repair_suggestions") or "Nu exista date.")
+        st.write("**Cauze posibile:** " + (local.get("possible_causes") or "Nu exista date."))
+        st.write("**Simptome:** " + (local.get("symptoms") or "Nu exista date."))
+        st.write("**Verificari recomandate:** " + (local.get("checks") or "Nu exista date."))
+        st.write("**Recomandari de reparatie:** " + (local.get("repair_suggestions") or "Nu exista date."))
         st.caption(f"Sursa: {local.get('source', 'Baza interna')} | Nivel: {local.get('confidence', 'Orientativ')}")
     else:
-        st.info("Nu exista inca o fisa explicativa locala pentru acest cod. Mai jos sunt afisate datele gasite in baza DTC.")
+        st.info("Nu exista o fisa explicativa detaliata disponibila pentru acest cod in sursele conectate.")
 
     if not results.empty:
-        st.markdown("### Informatii tehnice din baza DTC")
+        st.markdown("### Definitii DTC si variante specifice producatorului")
         st.dataframe(results, use_container_width=True, hide_index=True)
         description = results.to_string(index=False)
     else:
         description = f"Cod DTC: {current_code}"
-        if not local:
-            st.warning("Codul nu a fost gasit in baza DTC si nu exista o fisa locala pentru el.")
 
     fixes = search_mechanicdb_fixes(current_code)
     if not fixes.empty:
         st.markdown("### Proceduri de remediere – mostra MechanicDB")
-        st.caption("Mostra publica limitata; verifica intotdeauna aplicabilitatea pentru marca, model si motor.")
+        st.caption("Mostra publica limitata. Procedurile trebuie potrivite cu marca, modelul si motorul vehiculului.")
         st.dataframe(fixes, use_container_width=True, hide_index=True)
 
     parts = search_mechanicdb_parts(current_code)
@@ -1681,10 +1868,16 @@ def page_dtc_diagnosis():
         st.markdown("### Piese asociate – mostra MechanicDB")
         st.dataframe(parts, use_container_width=True, hide_index=True)
 
+    if not obdex_record and not local and results.empty and fixes.empty:
+        st.warning(
+            "Codul nu a fost gasit in cataloagele disponibile. "
+            "Verifica daca ai selectat producatorul corect si daca baza DTC este descarcata."
+        )
+
     st.divider()
     st.subheader("Salveaza diagnosticul")
     diagnosis = st.text_area("Diagnostic stabilit de tehnician")
-    repair = st.text_area("Reparatie efectuata")
+    repair_text = st.text_area("Reparatie efectuata")
 
     if st.button("Salveaza in istoricul DTC"):
         save_dtc_history(
@@ -1693,7 +1886,7 @@ def page_dtc_diagnosis():
             current_code,
             description,
             diagnosis,
-            repair
+            repair_text
         )
         st.success("Codul a fost salvat in istoric.")
 
@@ -1701,10 +1894,12 @@ def page_dtc_diagnosis():
         export_dataframe_csv(results, "diagnostic_dtc.csv")
 
     st.warning(
-        "Sugestiile sunt orientative. Codul DTC nu confirma singur defectarea unei piese; "
-        "verifica datele specifice vehiculului si confirma cauza prin masuratori."
+        "Un cod DTC descrie o conditie detectata, nu confirma singur piesa defecta. "
+        "Costurile si recomandarile sunt orientative; confirma diagnosticul cu procedura producatorului."
     )
 
+
+# ============================================================
 
 # CAUTARE CODURI DTC
 # ============================================================
@@ -2788,6 +2983,7 @@ def page_database_sources():
 
     paths = [
         ("Coduri DTC", DTC_DB_PATH),
+        ("Catalog explicativ OBDEX", OBDEX_PATH),
         ("VehiclesDB", VEHICLES_DB_PATH),
         ("Motoare si generatii", ENGINES_DB_PATH),
         ("Baza locala", LOCAL_DB_PATH)
@@ -2822,6 +3018,15 @@ def page_database_sources():
             st.rerun()
         else:
             st.error("Descarcarea bazei DTC a esuat: " + message)
+
+    if st.button("Descarca / actualizeaza catalogul explicativ OBDEX (9.500+ coduri)", use_container_width=True):
+        with st.spinner("Se descarca catalogul explicativ OBDEX..."):
+            success, message = download_obdex_dataset(force=True)
+        if success:
+            st.success(message)
+            st.rerun()
+        else:
+            st.error(message)
 
     if st.button("Descarca mostrele publice MechanicDB", use_container_width=True):
         with st.spinner("Se descarca procedurile si piesele MechanicDB..."):
