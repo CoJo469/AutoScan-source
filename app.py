@@ -589,12 +589,13 @@ def download_database(url, destination):
 def ensure_external_database(
     destination,
     url,
-    required_tables=None
+    required_tables=None,
+    force_refresh=False
 ):
 
     destination = Path(destination)
 
-    if destination.exists():
+    if destination.exists() and not force_refresh:
 
         conn = get_external_db(destination)
 
@@ -1245,13 +1246,33 @@ def search_engine_catalog(
             + f" JOIN models mo ON "
             f"mo.{quote_identifier(model_make_id)} = "
             f"mk.{quote_identifier(make_id)}"
-            + f" JOIN generations g ON "
+            + f" LEFT JOIN generations g ON "
             f"g.{quote_identifier(gen_model_id)} = "
             f"mo.{quote_identifier(model_id)}"
-            + f" JOIN engines e ON "
+            + f" LEFT JOIN engines e ON "
             f"e.{quote_identifier(engine_gen_id)} = "
             f"g.{quote_identifier(gen_id)}"
         )
+
+        # Specificatiile extinse sunt pastrate separat in engine_specs (EAV).
+        # Le agregam intr-un singur camp pentru a nu multiplica randurile motorului.
+        if table_exists(conn, "engine_specs"):
+            spec_columns = get_table_columns(conn, "engine_specs")
+            spec_engine_id = find_existing_column(spec_columns, ["engine_id"])
+            spec_key = find_existing_column(spec_columns, ["key", "name"])
+            spec_value = find_existing_column(spec_columns, ["value", "val"])
+            engine_id = find_existing_column(tables["engines"], ["id", "engine_id"])
+            if all([spec_engine_id, spec_key, spec_value, engine_id]):
+                sql = sql.replace(
+                    " FROM makes mk",
+                    ", (SELECT group_concat("
+                    f"CAST(es.{quote_identifier(spec_key)} AS TEXT) || ': ' || "
+                    f"CAST(es.{quote_identifier(spec_value)} AS TEXT), ' | ') "
+                    f"FROM engine_specs es WHERE "
+                    f"es.{quote_identifier(spec_engine_id)} = "
+                    f"e.{quote_identifier(engine_id)}) AS engine_specs "
+                    " FROM makes mk"
+                )
 
         conditions = []
         params = []
@@ -2437,6 +2458,35 @@ def page_engine_data():
                 st.error(download_message)
 
         return
+
+    db_counts = {
+        "Marci": get_table_count(ENGINES_DB_PATH, "makes"),
+        "Modele": get_table_count(ENGINES_DB_PATH, "models"),
+        "Generatii": get_table_count(ENGINES_DB_PATH, "generations"),
+        "Motorizari": get_table_count(ENGINES_DB_PATH, "engines"),
+        "Specificatii brute": get_table_count(ENGINES_DB_PATH, "engine_specs")
+    }
+    st.caption(
+        "Date incarcate: " + " · ".join(
+            f"{name}: {count:,}".replace(",", " ")
+            for name, count in db_counts.items()
+        )
+    )
+
+    if st.button("Actualizeaza baza de date cu ultima versiune"):
+        with st.spinner("Se descarca si se valideaza ultima versiune a catalogului..."):
+            success, refresh_message = ensure_external_database(
+                ENGINES_DB_PATH,
+                ENGINES_DB_URL,
+                ["makes", "models", "generations", "engines"],
+                force_refresh=True
+            )
+        if success:
+            st.success(refresh_message)
+            st.session_state.pop("engine_results", None)
+            st.rerun()
+        else:
+            st.error(refresh_message)
 
     col1, col2 = st.columns(2)
 
