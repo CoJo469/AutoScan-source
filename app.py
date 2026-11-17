@@ -404,6 +404,7 @@ Curăță MAF numai cu produs adecvat.
 Înlocuiește senzorul doar dacă testele confirmă defectul.""",
             "Nu înlocui MAF doar pe baza codului."
         )
+
     ]
 
     cursor = conn.cursor()
@@ -577,17 +578,21 @@ def get_vehicle_kinds():
     if conn is None:
         return []
 
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT DISTINCT kind
-        FROM makes
-        ORDER BY kind
-    """)
+        cursor.execute("""
+            SELECT DISTINCT kind
+            FROM makes
+            ORDER BY kind
+        """)
 
-    return [
-        row[0] for row in cursor.fetchall()
-    ]
+        return [
+            row[0] for row in cursor.fetchall()
+        ]
+
+    except sqlite3.Error:
+        return []
 
 
 def get_vehicle_makes(kind):
@@ -597,21 +602,25 @@ def get_vehicle_makes(kind):
     if conn is None:
         return []
 
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT DISTINCT name
-        FROM makes
-        WHERE kind = ?
-        ORDER BY name
-    """, (kind,))
+        cursor.execute("""
+            SELECT DISTINCT name
+            FROM makes
+            WHERE kind = ?
+            ORDER BY name
+        """, (kind,))
 
-    return [
-        row[0] for row in cursor.fetchall()
-    ]
+        return [
+            row[0] for row in cursor.fetchall()
+        ]
+
+    except sqlite3.Error:
+        return []
 
 
-def search_vehicles(kind, make, search_text):
+def search_vehicles(kind, make, search_text, selected_year=0):
 
     conn = get_vehicles_connection()
 
@@ -655,6 +664,20 @@ def search_vehicles(kind, make, search_text):
             f"%{search_text.strip().lower()}%"
         )
 
+    if selected_year > 0:
+        query += """
+            AND (
+                m.year_start IS NULL
+                OR m.year_start <= ?
+            )
+            AND (
+                m.year_end IS NULL
+                OR m.year_end = 0
+                OR m.year_end >= ?
+            )
+        """
+        params.extend([selected_year, selected_year])
+
     query += """
         GROUP BY
             m.id,
@@ -666,7 +689,6 @@ def search_vehicles(kind, make, search_text):
             m.year_end
 
         ORDER BY mk.name, m.name
-        LIMIT 500
     """
 
     try:
@@ -676,7 +698,8 @@ def search_vehicles(kind, make, search_text):
             params=params
         )
 
-    except Exception:
+    except Exception as e:
+        st.error(f"Eroare la căutarea vehiculelor: {e}")
         return pd.DataFrame()
 
 
@@ -1013,7 +1036,7 @@ elif page == "Vehicle Search":
     st.title("🚗 Vehicle Search")
 
     st.write(
-        "Caută mărci și modele din baza de date VehiclesDB."
+        "Caută toate mărcile și modelele disponibile în VehiclesDB."
     )
 
     if not vehicles_ready:
@@ -1032,8 +1055,15 @@ elif page == "Vehicle Search":
 
         c1, c2 = st.columns(2)
 
-        c1.metric("Mărci în baza de date", f"{makes_count:,}")
-        c2.metric("Modele în baza de date", f"{models_count:,}")
+        c1.metric(
+            "Mărci în baza de date",
+            f"{makes_count:,}"
+        )
+
+        c2.metric(
+            "Modele în baza de date",
+            f"{models_count:,}"
+        )
 
         st.markdown("---")
 
@@ -1049,6 +1079,8 @@ elif page == "Vehicle Search":
         }
 
         if kinds:
+
+            st.subheader("Filtre de căutare")
 
             selected_kind = st.selectbox(
                 "Categorie vehicul",
@@ -1067,16 +1099,32 @@ elif page == "Vehicle Search":
             )
 
             model_search = st.text_input(
-                "Caută model",
+                "Numele modelului",
                 placeholder="Exemplu: Golf, Corolla, Focus..."
             )
 
-            if st.button("🔎 Caută vehicule", type="primary"):
+            selected_year = st.number_input(
+                "An de fabricație (0 = toți anii)",
+                min_value=0,
+                max_value=2100,
+                value=0,
+                step=1
+            )
+
+            st.caption(
+                "Poți afișa toate modelele sau poți combina filtrele."
+            )
+
+            if st.button(
+                "🔎 Afișează toate modelele",
+                type="primary"
+            ):
 
                 results = search_vehicles(
                     selected_kind,
                     selected_make,
-                    model_search
+                    model_search,
+                    selected_year
                 )
 
                 if results.empty:
@@ -1088,17 +1136,30 @@ elif page == "Vehicle Search":
                 else:
 
                     st.success(
-                        f"Am găsit {len(results)} rezultate."
+                        f"Au fost găsite {len(results):,} modele."
                     )
 
                     st.dataframe(
                         results,
                         use_container_width=True,
-                        hide_index=True
+                        hide_index=True,
+                        height=650
                     )
 
                     st.caption(
-                        "Sunt afișate maximum 500 de rezultate."
+                        "Sunt afișate toate rezultatele găsite. "
+                        "Nu există o limită artificială de 500 de modele."
+                    )
+
+                    csv_data = results.to_csv(
+                        index=False
+                    ).encode("utf-8-sig")
+
+                    st.download_button(
+                        label="📥 Descarcă rezultatele CSV",
+                        data=csv_data,
+                        file_name="vehicle_models.csv",
+                        mime="text/csv"
                     )
 
         else:
@@ -1208,8 +1269,6 @@ elif page == "Database":
     st.subheader("Vehicle Database")
 
     if vehicles_ready:
-
-        tables_count = 5
 
         makes_count, models_count = (
             get_vehicle_statistics()
