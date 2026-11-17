@@ -1005,6 +1005,104 @@ def search_database_table(db_path, table_name, search_term=""):
 # CAUTARE GENERATII SI MOTOARE
 # ============================================================
 
+def search_vehicle_catalog(make="", model="", limit=None):
+    """Catalog unificat: marca, model, generatie si motor din aceeasi baza."""
+    conn = get_external_db(ENGINES_DB_PATH)
+    if conn is None:
+        return pd.DataFrame()
+
+    try:
+        required = ["makes", "models", "generations", "engines"]
+        if not all(table_exists(conn, table) for table in required):
+            return pd.DataFrame()
+
+        columns = {t: get_table_columns(conn, t) for t in required}
+        mk_id = find_existing_column(columns["makes"], ["id", "make_id"])
+        mk_name = find_existing_column(columns["makes"], ["name", "make", "title"])
+        mo_id = find_existing_column(columns["models"], ["id", "model_id"])
+        mo_name = find_existing_column(columns["models"], ["name", "model", "title"])
+        mo_make = find_existing_column(columns["models"], ["make_id", "manufacturer_id"])
+        gen_id = find_existing_column(columns["generations"], ["id", "generation_id"])
+        gen_model = find_existing_column(columns["generations"], ["model_id"])
+        gen_name = find_existing_column(columns["generations"], ["name", "generation", "title"])
+        eng_gen = find_existing_column(columns["engines"], ["generation_id"])
+        if not all([mk_id, mk_name, mo_id, mo_name, mo_make, gen_id, gen_model, eng_gen]):
+            st.error("Structura bazei de vehicule nu corespunde. Nu afisez un catalog partial.")
+            return pd.DataFrame()
+
+        gen_start = find_existing_column(columns["generations"], ["year_start", "start_year", "year_from"])
+        gen_end = find_existing_column(columns["generations"], ["year_end", "end_year", "year_to"])
+        eng_label = find_existing_column(columns["engines"], ["label", "name", "engine"])
+        eng_fuel = find_existing_column(columns["engines"], ["fuel_type", "fuel"])
+        eng_power = find_existing_column(columns["engines"], ["power_hp", "power", "hp"])
+        eng_cc = find_existing_column(columns["engines"], ["displacement_cc", "displacement", "engine_cc"])
+
+        fields = [
+            f'mk.{quote_identifier(mk_name)} AS "Marca"',
+            f'mo.{quote_identifier(mo_name)} AS "Model"',
+            (f'g.{quote_identifier(gen_name)} AS "Generatie"' if gen_name else "NULL AS Generatie"),
+            (f'g.{quote_identifier(gen_start)} AS "An inceput"' if gen_start else "NULL AS " + quote_identifier("An inceput")),
+            (f'g.{quote_identifier(gen_end)} AS "An sfarsit"' if gen_end else "NULL AS " + quote_identifier("An sfarsit")),
+            (f'e.{quote_identifier(eng_label)} AS "Motorizare"' if eng_label else "NULL AS Motorizare"),
+            (f'e.{quote_identifier(eng_fuel)} AS "Combustibil"' if eng_fuel else "NULL AS Combustibil"),
+            (f'e.{quote_identifier(eng_cc)} AS "Cilindree (cmc)"' if eng_cc else 'NULL AS "Cilindree (cmc)"'),
+            (f'e.{quote_identifier(eng_power)} AS "Putere (CP)"' if eng_power else 'NULL AS "Putere (CP)"')
+        ]
+        sql = (
+            "SELECT " + ", ".join(fields) +
+            " FROM makes mk "
+            f"JOIN models mo ON mo.{quote_identifier(mo_make)} = mk.{quote_identifier(mk_id)} "
+            f"LEFT JOIN generations g ON g.{quote_identifier(gen_model)} = mo.{quote_identifier(mo_id)} "
+            f"LEFT JOIN engines e ON e.{quote_identifier(eng_gen)} = g.{quote_identifier(gen_id)}"
+        )
+        conditions, params = [], []
+        if make:
+            conditions.append(f"LOWER(CAST(mk.{quote_identifier(mk_name)} AS TEXT)) = LOWER(?)")
+            params.append(make)
+        if model:
+            conditions.append(f"LOWER(CAST(mo.{quote_identifier(mo_name)} AS TEXT)) LIKE LOWER(?)")
+            params.append(f"%{model.strip()}%")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += f' ORDER BY mo.{quote_identifier(mo_name)}'
+        if gen_start:
+            sql += f', g.{quote_identifier(gen_start)}'
+        if limit:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return pd.read_sql_query(sql, conn, params=params).drop_duplicates()
+    except Exception as exc:
+        st.error(f"Eroare la citirea catalogului unificat: {exc}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def get_engine_catalog_makes():
+    conn = get_external_db(ENGINES_DB_PATH)
+    if conn is None:
+        return []
+    try:
+        if not table_exists(conn, "makes"):
+            return []
+        columns = get_table_columns(conn, "makes")
+        name_col = find_existing_column(columns, ["name", "make", "title"])
+        if not name_col:
+            return []
+        rows = conn.execute(
+            f"SELECT DISTINCT {quote_identifier(name_col)} FROM makes "
+            f"WHERE {quote_identifier(name_col)} IS NOT NULL "
+            f"AND TRIM({quote_identifier(name_col)}) != '' "
+            f"ORDER BY {quote_identifier(name_col)}"
+        ).fetchall()
+        return [row[0] for row in rows if row and row[0]]
+    except Exception as exc:
+        st.error(f"Eroare la citirea marcilor: {exc}")
+        return []
+    finally:
+        conn.close()
+
+
 def search_vehicle_generations(make="", model=""):
     """Afiseaza toate generatiile unui model, inclusiv fara motoare asociate."""
     conn = get_external_db(ENGINES_DB_PATH)
@@ -2221,158 +2319,83 @@ def page_dtc_search():
 # ============================================================
 
 def page_vehicle_search():
-
     page_header(
         "Catalog vehicule",
-        "Cauta marci si modele din baza VehiclesDB."
+        "Catalog unificat: marca, model, generatie si motorizare din aceeasi sursa."
     )
 
-    status, message = get_vehicle_database_status()
-
+    status, message = get_engine_database_status()
     if not status:
-
-        st.warning(message)
-
-        if st.button("Descarca baza VehiclesDB"):
-
-            with st.spinner("Se descarca baza de date..."):
-
+        st.warning(
+            "Catalogul complet cu marci, modele, generatii si motoare nu este instalat."
+        )
+        if st.button("Descarca catalogul complet de vehicule", type="primary"):
+            with st.spinner("Se descarca baza completa de vehicule..."):
                 success, download_message = ensure_external_database(
-                    VEHICLES_DB_PATH,
-                    VEHICLES_DB_URL,
-                    ["makes", "models"]
+                    ENGINES_DB_PATH,
+                    ENGINES_DB_URL,
+                    ["makes", "models", "generations", "engines"]
                 )
-
             if success:
                 st.success(download_message)
                 st.rerun()
             else:
                 st.error(download_message)
-
         return
 
-    makes = get_vehicle_makes()
-
+    makes = get_engine_catalog_makes()
     if not makes:
-        st.error("Nu am putut identifica marcile.")
+        st.error("Baza de date nu contine marci. Verifica descarcarea catalogului.")
         return
 
-    st.write(
-        f"Marci disponibile in baza de date: **{len(makes)}**"
+    st.caption(
+        f"Catalogul unificat contine {len(makes)} marci disponibile in sursa."
     )
-
     col1, col2 = st.columns(2)
-
     with col1:
-        selected_make = st.selectbox(
-            "Marca",
-            ["Toate"] + makes
-        )
-
+        selected_make = st.selectbox("Marca", ["Toate"] + makes, key="unified_vehicle_make")
     with col2:
         model_search = st.text_input(
             "Model",
-            placeholder="Exemplu: Logan, Golf, Corolla"
+            placeholder="Exemplu: A4, Seria 3, Golf, Corolla",
+            key="unified_vehicle_model"
         )
 
-    general_search = st.text_input(
-        "Cautare suplimentara",
-        placeholder="Cuvant din denumire sau categorie"
-    )
-
-    if st.button("Cauta vehicule", type="primary"):
-
-        with st.spinner("Se cauta in catalog..."):
-
-            df = search_vehicles(
-                make="" if selected_make == "Toate"
-                else selected_make,
-                model=model_search,
-                search_term=general_search
+    if st.button("Afiseaza modele, generatii si motorizari", type="primary"):
+        with st.spinner("Se cauta in catalogul unificat..."):
+            df = search_vehicle_catalog(
+                make="" if selected_make == "Toate" else selected_make,
+                model=model_search
             )
+            st.session_state["unified_vehicle_results"] = df
 
-            st.session_state["vehicle_results"] = df
-
-    results = st.session_state.get(
-        "vehicle_results",
-        pd.DataFrame()
-    )
-
+    results = st.session_state.get("unified_vehicle_results", pd.DataFrame())
     if not results.empty:
-
+        model_count = results["Model"].nunique() if "Model" in results.columns else 0
+        generation_count = (
+            results["Generatie"].dropna().nunique()
+            if "Generatie" in results.columns else 0
+        )
         st.success(
-            f"Au fost gasite {len(results)} rezultate."
+            f"{len(results)} variante gasite · {model_count} modele · "
+            f"{generation_count} generatii"
         )
-
-        st.dataframe(
-            results,
-            use_container_width=True,
-            hide_index=True
-        )
-
+        st.dataframe(results, use_container_width=True, hide_index=True)
         export_dataframe_csv(
             results,
-            "catalog_vehicule.csv",
-            "Descarca toate rezultatele CSV"
+            "catalog_unificat_vehicule.csv",
+            "Descarca toate modelele, generatiile si motoarele CSV"
+        )
+    elif "unified_vehicle_results" in st.session_state:
+        st.warning(
+            "Nu exista potriviri in catalog pentru aceasta selectie. "
+            "Incearca o denumire mai scurta sau selecteaza «Toate» la marca."
         )
 
-    elif "vehicle_results" in st.session_state:
-        st.info("Nu exista rezultate pentru cautarea efectuata.")
-
-    if selected_make != "Toate" and model_search.strip():
-        st.markdown("### Generatii si variante ale modelului")
-        engine_status, engine_message = get_engine_database_status()
-
-        if not engine_status:
-            st.warning(
-                "Catalogul care contine generatiile si motorizarea nu este instalat. "
-                "Pana acum era afisata doar denumirea simpla a modelului din VehiclesDB."
-            )
-            if st.button(
-                "Descarca acum catalogul complet cu generatii si motoare",
-                key="download_vehicle_generations_catalog",
-                type="primary",
-                use_container_width=True
-            ):
-                with st.spinner(
-                    "Se descarca baza completa: marci, modele, generatii si motoare. "
-                    "Prima descarcare poate dura cateva minute..."
-                ):
-                    success, download_message = ensure_external_database(
-                        ENGINES_DB_PATH,
-                        ENGINES_DB_URL,
-                        ["makes", "models", "generations", "engines"]
-                    )
-                if success:
-                    st.success(
-                        "Catalogul complet a fost instalat. Se reincarca lista de generatii."
-                    )
-                    st.rerun()
-                else:
-                    st.error(
-                        "Nu am putut instala catalogul de generatii: "
-                        + download_message
-                    )
-        else:
-            generations = search_vehicle_generations(
-                make=selected_make,
-                model=model_search.strip()
-            )
-            if not generations.empty:
-                st.success(f"Generatii gasite: {len(generations)}")
-                st.dataframe(generations, use_container_width=True, hide_index=True)
-                export_dataframe_csv(
-                    generations,
-                    "generatii_vehicul.csv",
-                    "Descarca toate generatiile CSV"
-                )
-            else:
-                st.warning(
-                    f"Catalogul de generatii este instalat, dar nu a returnat "
-                    f"generatii pentru {selected_make} {model_search}. "
-                    "Verifica marca si modelul sau foloseste pagina «Date tehnice motor»."
-                )
-
+    st.caption(
+        "Sursa include generatii si motorizari numai acolo unde sunt publicate. "
+        "Nu toate variantele regionale sau istorice sunt garantate."
+    )
 
 
 # ============================================================
