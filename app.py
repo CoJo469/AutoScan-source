@@ -277,7 +277,59 @@ def initialize_local_database():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS diagnosis_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dtc_code TEXT NOT NULL UNIQUE,
+        title TEXT,
+        possible_causes TEXT,
+        symptoms TEXT,
+        checks TEXT,
+        repair_suggestions TEXT,
+        source TEXT,
+        confidence TEXT DEFAULT 'Orientativ',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
     """)
+
+    seed_records = [
+        ("P0300", "Rateuri de aprindere detectate aleatoriu sau pe mai multi cilindri",
+         "Bujii uzate, bobine, injectoare, presiune combustibil, admisie falsa sau compresie scazuta.",
+         "Motorul poate tremura, poate pierde putere sau poate functiona neregulat.",
+         "Verifica bujiile si bobinele; citeste contoarele de rateuri pe cilindri; verifica corectiile de combustibil, presiunea si compresia.",
+         "Identifica cilindrii afectati si confirma cauza prin masuratori inainte de inlocuirea pieselor."),
+        ("P0171", "Amestec prea sarac – Bank 1",
+         "Aer fals pe admisie, debitmetru MAF, presiune combustibil scazuta, injectoare sau evacuare neetansa inaintea sondei.",
+         "Ralanti instabil, ezitari, putere redusa sau consum modificat.",
+         "Verifica furtunurile si garniturile de admisie; compara valorile MAF; analizeaza STFT/LTFT si masoara presiunea combustibilului.",
+         "Localizeaza cauza amestecului sarac si verifica din nou corectiile de combustibil dupa reparatie."),
+        ("P0420", "Eficienta sistemului catalitic sub prag – Bank 1",
+         "Catalizator degradat, senzori lambda, scapari pe evacuare sau probleme de functionare ale motorului.",
+         "Martor Check Engine si uneori consum sau performanta modificate.",
+         "Verifica scapari pe evacuare, semnalele sondelor lambda si eventualele rateuri sau amestec incorect.",
+         "Nu inlocui catalizatorul inainte de a verifica sondele, scaparea pe evacuare si cauzele care pot deteriora catalizatorul."),
+        ("P0128", "Temperatura lichidului de racire sub temperatura de reglare",
+         "Termostat blocat deschis, senzor de temperatura sau probleme la circuitul de racire.",
+         "Incalzire lenta a motorului sau temperatura de functionare neobisnuit de scazuta.",
+         "Compara temperatura ECT la rece cu temperatura ambientala si urmareste cresterea temperaturii in mers.",
+         "Verifica termostatul si senzorul ECT; confirma valorile cu datele specifice motorului inainte de inlocuire."),
+        ("P0101", "Performanta sau plauzibilitate debitmetru MAF – domeniu/performance",
+         "MAF murdar sau defect, admisie neetansa, filtru de aer obturat sau cablaj/conector deteriorat.",
+         "Putere redusa, ralanti instabil sau raspuns slab la acceleratie.",
+         "Verifica filtrul de aer si traseul de admisie; inspecteaza mufele; compara debitul MAF masurat cu valorile asteptate pentru motor.",
+         "Confirma cauza prin inspectie si masuratori; nu rezolva problema doar prin stergerea codului.")
+    ]
+
+    for record in seed_records:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO diagnosis_records (
+                dtc_code, title, possible_causes, symptoms, checks,
+                repair_suggestions, source, confidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            record + ("Baza interna Auto Diagnosis Pro", "Orientativ")
+        )
 
     conn.commit()
     conn.close()
@@ -1543,99 +1595,117 @@ def page_dashboard():
 # DIAGNOSTICARE DTC
 # ============================================================
 
+def lookup_local_diagnosis(code):
+    """Intoarce explicatiile locale pentru codurile DTC cunoscute."""
+    code = re.sub(r"[^A-Z0-9]", "", str(code or "").upper())
+    if len(code) != 5:
+        return None
+    conn = get_local_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM diagnosis_records WHERE UPPER(dtc_code) = ? LIMIT 1",
+            (code,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def page_dtc_diagnosis():
 
     page_header(
         "Diagnosticare DTC",
-        "Introdu codul de eroare pentru a cauta informatii."
+        "Introdu codul de eroare pentru explicatii, cauze posibile si verificari recomandate."
     )
 
     code = st.text_input(
         "Cod DTC",
-        placeholder="Exemplu: P0301"
+        placeholder="Exemplu: P0300",
+        max_chars=10
     ).upper().strip()
 
     vehicle = st.text_input("Vehicul")
     engine = st.text_input("Motor")
 
     if st.button("Analizeaza codul DTC", type="primary"):
-
-        if not code:
-            st.warning("Introdu un cod DTC.")
+        normalized_code = re.sub(r"[^A-Z0-9]", "", code)
+        if len(normalized_code) != 5 or normalized_code[0] not in "PBCU" or not normalized_code[1:].isdigit():
+            st.warning("Introdu un cod OBD-II valid, de exemplu P0300.")
         else:
-            results = search_dtc(code=code)
-
-            st.session_state["dtc_results"] = results
-            st.session_state["dtc_current_code"] = code
+            st.session_state["dtc_current_code"] = normalized_code
             st.session_state["dtc_vehicle"] = vehicle
             st.session_state["dtc_engine"] = engine
+            st.session_state["dtc_results"] = search_dtc(code=normalized_code)
 
-    results = st.session_state.get(
-        "dtc_results",
-        pd.DataFrame()
-    )
+    current_code = st.session_state.get("dtc_current_code", "")
+    if not current_code:
+        st.info("Introdu un cod DTC si apasa «Analizeaza codul DTC».")
+        return
+
+    st.subheader(f"Rezultate pentru {current_code}")
+    local = lookup_local_diagnosis(current_code)
+    results = st.session_state.get("dtc_results", pd.DataFrame())
+
+    if local:
+        st.markdown("### Diagnostic si sugestii de rezolvare")
+        st.markdown(f"**{local.get('title', '')}**")
+        st.markdown("**Cauze posibile**")
+        st.write(local.get("possible_causes") or "Nu exista date.")
+        st.markdown("**Simptome posibile**")
+        st.write(local.get("symptoms") or "Nu exista date.")
+        st.markdown("**Verificari recomandate**")
+        st.write(local.get("checks") or "Nu exista date.")
+        st.markdown("**Recomandari de reparatie**")
+        st.write(local.get("repair_suggestions") or "Nu exista date.")
+        st.caption(f"Sursa: {local.get('source', 'Baza interna')} | Nivel: {local.get('confidence', 'Orientativ')}")
+    else:
+        st.info("Nu exista inca o fisa explicativa locala pentru acest cod. Mai jos sunt afisate datele gasite in baza DTC.")
 
     if not results.empty:
-
-        st.success(
-            f"Au fost gasite {len(results)} inregistrari in baza DTC."
-        )
-
-        st.dataframe(
-            results,
-            use_container_width=True,
-            hide_index=True
-        )
-
+        st.markdown("### Informatii tehnice din baza DTC")
+        st.dataframe(results, use_container_width=True, hide_index=True)
         description = results.to_string(index=False)
+    else:
+        description = f"Cod DTC: {current_code}"
+        if not local:
+            st.warning("Codul nu a fost gasit in baza DTC si nu exista o fisa locala pentru el.")
 
-        fixes = search_mechanicdb_fixes(st.session_state.get("dtc_current_code", ""))
-        if not fixes.empty:
-            st.markdown("### Proceduri de remediere – mostra MechanicDB")
-            st.caption("Set de mostre publice; nu reprezinta catalogul complet.")
-            st.dataframe(fixes, use_container_width=True, hide_index=True)
+    fixes = search_mechanicdb_fixes(current_code)
+    if not fixes.empty:
+        st.markdown("### Proceduri de remediere – mostra MechanicDB")
+        st.caption("Mostra publica limitata; verifica intotdeauna aplicabilitatea pentru marca, model si motor.")
+        st.dataframe(fixes, use_container_width=True, hide_index=True)
 
-        parts = search_mechanicdb_parts(st.session_state.get("dtc_current_code", ""))
-        if not parts.empty:
-            st.markdown("### Piese asociate – mostra MechanicDB")
-            st.dataframe(parts, use_container_width=True, hide_index=True)
+    parts = search_mechanicdb_parts(current_code)
+    if not parts.empty:
+        st.markdown("### Piese asociate – mostra MechanicDB")
+        st.dataframe(parts, use_container_width=True, hide_index=True)
 
-        diagnosis = st.text_area(
-            "Diagnostic stabilit de tehnician"
+    st.divider()
+    st.subheader("Salveaza diagnosticul")
+    diagnosis = st.text_area("Diagnostic stabilit de tehnician")
+    repair = st.text_area("Reparatie efectuata")
+
+    if st.button("Salveaza in istoricul DTC"):
+        save_dtc_history(
+            st.session_state.get("dtc_vehicle", ""),
+            st.session_state.get("dtc_engine", ""),
+            current_code,
+            description,
+            diagnosis,
+            repair
         )
+        st.success("Codul a fost salvat in istoric.")
 
-        repair = st.text_area(
-            "Reparatie efectuata"
-        )
-
-        if st.button("Salveaza in istoricul DTC"):
-
-            save_dtc_history(
-                st.session_state.get("dtc_vehicle", ""),
-                st.session_state.get("dtc_engine", ""),
-                st.session_state.get("dtc_current_code", ""),
-                description,
-                diagnosis,
-                repair
-            )
-
-            st.success("Codul a fost salvat in istoric.")
-
-        export_dataframe_csv(
-            results,
-            "diagnostic_dtc.csv"
-        )
-
-    elif "dtc_results" in st.session_state:
-        st.warning("Codul nu a fost gasit in baza de date.")
+    if not results.empty:
+        export_dataframe_csv(results, "diagnostic_dtc.csv")
 
     st.warning(
-        "Un cod DTC indica o conditie detectata de calculator, "
-        "nu confirma automat defectarea unei anumite piese."
+        "Sugestiile sunt orientative. Codul DTC nu confirma singur defectarea unei piese; "
+        "verifica datele specifice vehiculului si confirma cauza prin masuratori."
     )
 
 
-# ============================================================
 # CAUTARE CODURI DTC
 # ============================================================
 
