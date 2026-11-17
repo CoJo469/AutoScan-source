@@ -1588,7 +1588,7 @@ def translate_dtc_dataframe(frame):
             stripped = value.strip()
             if (not stripped or stripped.startswith(("http://", "https://"))
                     or re.fullmatch(r"[PBCU][0-3][0-9A-F]{3}", stripped.upper())
-                    or re.fullmatch(r"[-+]?\\d+(?:[.,]\\d+)?", stripped)):
+                    or re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", stripped)):
                 return value
             return obdex_text(value)
         if isinstance(value, (list, dict)):
