@@ -1461,48 +1461,105 @@ def get_obdex_record(code):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def translate_dtc_to_romanian(value):
-    """Traduce textele sursei DTC in romana si memoreaza rezultatul."""
+    """Traduce texte tehnice in romana, cu doua servicii si dictionar local."""
     text_value = clean_text(value)
     if not text_value:
         return ""
+
+    glossary = {
+        "engine": "motor", "engine control": "comanda motorului",
+        "fuel system": "sistem de alimentare", "ignition system": "sistem de aprindere",
+        "emission control": "controlul emisiilor", "exhaust system": "sistem de evacuare",
+        "catalyst": "catalizator", "catalytic converter": "convertor catalitic",
+        "oxygen sensor": "sonda lambda", "air flow sensor": "senzor debit aer",
+        "mass air flow": "debit masic de aer", "intake air": "aer admis",
+        "coolant": "lichid de racire", "cooling system": "sistem de racire",
+        "transmission": "transmisie", "automatic transmission": "transmisie automata",
+        "brake system": "sistem de franare", "abs": "ABS",
+        "body control": "control caroserie", "chassis": "sasiu",
+        "network communication": "comunicatie in retea", "communication": "comunicatie",
+        "sensor": "senzor", "circuit": "circuit", "voltage": "tensiune",
+        "low": "scazut", "high": "ridicat", "open": "intrerupt", "short": "scurtcircuit",
+        "intermittent": "intermitent", "performance": "functionare", "range": "interval",
+        "input": "intrare", "output": "iesire", "control module": "modul de comanda",
+        "misfire": "rateu de aprindere", "fuel trim": "corectie combustibil",
+        "evaporative": "sistem de control al vaporilor de combustibil",
+        "egr": "recircularea gazelor de evacuare (EGR)",
+        "throttle": "clapeta de acceleratie", "manifold": "galerie",
+        "pressure": "presiune", "temperature": "temperatura",
+        "cylinder": "cilindru", "injector": "injector", "pump": "pompa",
+        "valve": "supapa", "relay": "releu", "heater": "incalzitor",
+        "bank": "banc", "sensor circuit": "circuitul senzorului",
+        "fuel pressure": "presiunea combustibilului",
+        "engine speed": "turatia motorului", "vehicle speed": "viteza vehiculului",
+        "system too lean": "amestec prea sarac", "system too rich": "amestec prea bogat",
+        "not ready": "nepregatit", "not detected": "nedetectat",
+        "unknown": "necunoscut", "other": "altele"
+    }
+    normalized = text_value.replace("_", " ").replace("-", " ").strip()
+    key = normalized.lower()
+    if key in glossary:
+        return glossary[key]
+
+    # Incercam mai intai Google Translate.
     try:
         response = requests.get(
             "https://translate.googleapis.com/translate_a/single",
-            params={
-                "client": "gtx",
-                "sl": "auto",
-                "tl": "ro",
-                "dt": "t",
-                "q": text_value
-            },
-            timeout=(8, 20)
+            params={"client": "gtx", "sl": "auto", "tl": "ro", "dt": "t", "q": text_value},
+            timeout=(5, 12),
+            headers={"User-Agent": "Mozilla/5.0"}
         )
         response.raise_for_status()
         translated = response.json()
         result = "".join(
             part[0] for part in translated[0]
             if isinstance(part, list) and part and part[0]
-        )
-        return result or text_value
+        ).strip()
+        if result and result.lower() != text_value.lower():
+            return result
     except Exception:
-        # Pastreaza informatia originala daca serviciul de traducere nu raspunde.
-        return text_value
+        pass
+
+    # Serviciu alternativ pentru cazurile in care Google nu raspunde.
+    try:
+        response = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text_value[:450], "langpair": "en|ro"},
+            timeout=(5, 12),
+            headers={"User-Agent": "AutoScan-DTC/1.0"}
+        )
+        response.raise_for_status()
+        result = clean_text(response.json().get("responseData", {}).get("translatedText", ""))
+        if result and result.lower() != text_value.lower():
+            return result
+    except Exception:
+        pass
+
+    # Nu inventam o traducere daca ambele servicii sunt indisponibile.
+    return text_value
 
 
 def obdex_text(value):
-    """Extrage textul disponibil si il afiseaza in romana."""
+    """Extrage recursiv textele utile din campurile OBDEX si le traduce."""
     if isinstance(value, dict):
-        raw = value.get("ro") or value.get("en") or value.get("de") or ""
-        return translate_dtc_to_romanian(raw)
-    if isinstance(value, list):
-        return ", ".join(obdex_text(item) for item in value if item)
+        for language in ("ro", "en", "de"):
+            if value.get(language):
+                return obdex_text(value[language])
+        for field in ("label", "name", "title", "description", "value", "id", "text"):
+            if value.get(field):
+                return obdex_text(value[field])
+        return ", ".join(
+            obdex_text(item) for item in value.values() if item not in (None, "", [], {})
+        )
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(obdex_text(item) for item in value if item not in (None, "", [], {}))
     if isinstance(value, str):
-        return translate_dtc_to_romanian(value)
+        return translate_dtc_to_romanian(value.replace("_", " "))
     return clean_text(value)
 
 
 def translate_dtc_dataframe(frame):
-    """Traduce in romana valorile text si antetele tabelelor externe."""
+    """Traduce toate coloanele si valorile text din tabelele DTC."""
     if frame is None or frame.empty:
         return frame
     column_names = {
@@ -1514,22 +1571,32 @@ def translate_dtc_dataframe(frame):
         "part_name": "Piesa", "part": "Piesa", "category": "Categorie",
         "system": "Sistem", "manufacturer": "Producator", "make": "Marca",
         "model": "Model", "year": "An", "source": "Sursa",
-        "fix_id": "ID procedura", "id": "ID"
+        "fix_id": "ID procedura", "id": "ID", "subcategory": "Subcategorie",
+        "component": "Componenta", "components": "Componente",
+        "status": "Stare", "severity": "Gravitate", "description_en": "Descriere"
     }
     translated = frame.copy()
     translated.columns = [
-        column_names.get(str(col).strip().lower(), translate_dtc_to_romanian(str(col)))
+        column_names.get(str(col).strip().lower(), translate_dtc_to_romanian(str(col).replace("_", " ")))
         for col in translated.columns
     ]
+
+    def translate_cell(value):
+        if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if (not stripped or stripped.startswith(("http://", "https://"))
+                    or re.fullmatch(r"[PBCU][0-3][0-9A-F]{3}", stripped.upper())
+                    or re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", stripped)):
+                return value
+            return obdex_text(value)
+        if isinstance(value, (list, dict)):
+            return obdex_text(value)
+        return value
+
     for col in translated.columns:
-        translated[col] = translated[col].map(
-            lambda value: (
-                value if pd.isna(value) or not isinstance(value, str)
-                or value.strip().startswith(("http://", "https://"))
-                or re.fullmatch(r"[PBCU][0-3][0-9A-F]{3}", value.strip().upper())
-                else translate_dtc_to_romanian(value)
-            )
-        )
+        translated[col] = translated[col].map(translate_cell)
     return translated
 
 
@@ -2009,13 +2076,13 @@ def page_dtc_search():
         st.write(f"Rezultate: {len(results)}")
 
         st.dataframe(
-            results,
+            translate_dtc_dataframe(results),
             use_container_width=True,
             hide_index=True
         )
 
         export_dataframe_csv(
-            results,
+            translate_dtc_dataframe(results),
             "biblioteca_dtc.csv"
         )
 
