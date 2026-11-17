@@ -1266,55 +1266,78 @@ def find_dtc_table():
         conn.close()
 
 
-def search_dtc(code="", search_term=""):
-
+def get_dtc_manufacturers():
+    """Returneaza marcile disponibile in catalogul DTC extern."""
     conn = get_external_db(DTC_DB_PATH)
+    if conn is None:
+        return []
+    try:
+        if not table_exists(conn, "dtc_definitions"):
+            return []
+        rows = conn.execute(
+            "SELECT DISTINCT manufacturer FROM dtc_definitions "
+            "WHERE manufacturer IS NOT NULL AND manufacturer != 'GENERIC' "
+            "ORDER BY manufacturer"
+        ).fetchall()
+        return [row[0] for row in rows if row and row[0]]
+    except Exception:
+        return []
+    finally:
+        conn.close()
 
+
+def search_dtc(code="", search_term="", manufacturer=""):
+    """Cauta coduri exacte si definitii generice + specifice marcii selectate."""
+    conn = get_external_db(DTC_DB_PATH)
     if conn is None:
         return pd.DataFrame()
 
     try:
         tables = get_database_tables(DTC_DB_PATH)
         frames = []
-
         for table in tables:
             columns = get_table_columns(conn, table)
             code_col = find_existing_column(
-                columns,
-                ["code", "dtc", "dtc_code", "trouble_code"]
+                columns, ["code", "dtc", "dtc_code", "trouble_code"]
             )
             if not code_col:
                 continue
 
-            conditions = []
-            params = []
+            conditions, params = [], []
             if code:
                 conditions.append(
-                    f"UPPER(CAST({quote_identifier(code_col)} AS TEXT)) LIKE ?"
+                    f"UPPER(TRIM(CAST({quote_identifier(code_col)} AS TEXT))) = ?"
                 )
-                params.append(f"%{code.upper().strip()}%")
+                params.append(code.upper().strip())
+
+            manufacturer_col = find_existing_column(columns, ["manufacturer", "make", "oem_make"])
+            if manufacturer and manufacturer != "Toate marcile" and manufacturer_col:
+                conditions.append(
+                    f"UPPER(CAST({quote_identifier(manufacturer_col)} AS TEXT)) IN (?, 'GENERIC')"
+                )
+                params.extend([manufacturer.upper()])
 
             if search_term:
-                searchable = [c for c in columns if c != code_col]
+                searchable = [col for col in columns if col != code_col]
                 if searchable:
-                    parts = []
-                    for column in searchable:
-                        parts.append(
-                            f"CAST({quote_identifier(column)} AS TEXT) LIKE ?"
-                        )
-                        params.append(f"%{search_term.strip()}%")
+                    parts = [
+                        f"CAST({quote_identifier(col)} AS TEXT) LIKE ?"
+                        for col in searchable
+                    ]
                     conditions.append("(" + " OR ".join(parts) + ")")
+                    params.extend([f"%{search_term.strip()}%"] * len(searchable))
 
             sql = f"SELECT * FROM {quote_identifier(table)}"
             if conditions:
                 sql += " WHERE " + " AND ".join(conditions)
-            sql += " LIMIT 500"
+            sql += " LIMIT 2000"
             frame = pd.read_sql_query(sql, conn, params=params)
             if not frame.empty:
                 frames.append(frame)
 
-        return pd.concat(frames, ignore_index=True).drop_duplicates() if frames else pd.DataFrame()
-
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True).drop_duplicates()
     except Exception as exc:
         st.error(f"Eroare baza DTC: {exc}")
         return pd.DataFrame()
@@ -1938,19 +1961,48 @@ def page_dtc_diagnosis():
         max_chars=10
     ).upper().strip()
 
-    vehicle = st.text_input("Vehicul")
+    manufacturers = get_dtc_manufacturers()
+    manufacturer_options = ["Toate marcile"] + manufacturers
+    manufacturer = st.selectbox(
+        "Producatorul vehiculului (pentru coduri specifice marcii)",
+        manufacturer_options,
+        help="Alege marca masinii pentru a vedea interpretarea ei, pe langa definitia generica."
+    )
+    vehicle = st.text_input("Vehicul (model si an)")
     engine = st.text_input("Motor")
 
     if st.button("Analizeaza codul DTC", type="primary"):
         normalized_code = re.sub(r"[^A-Z0-9]", "", code)
         if not re.fullmatch(r"[PBCU][0-3][0-9A-F]{3}", normalized_code):
-            st.warning("Introdu un cod OBD-II valid, de exemplu P0420.")
+            st.warning("Introdu un cod DTC standard valid, de exemplu P0420.")
         else:
+            if not Path(DTC_DB_PATH).exists():
+                with st.spinner("Se instaleaza catalogul extins de coduri DTC..."):
+                    db_ok, db_message = ensure_external_database(
+                        DTC_DB_PATH, DTC_DB_URL, ["dtc_definitions"]
+                    )
+                st.session_state["dtc_database_message"] = db_message
             st.session_state["dtc_current_code"] = normalized_code
             st.session_state["dtc_vehicle"] = vehicle
             st.session_state["dtc_engine"] = engine
-            st.session_state["dtc_results"] = search_dtc(code=normalized_code)
+            st.session_state["dtc_manufacturer"] = manufacturer
+            st.session_state["dtc_results"] = search_dtc(
+                code=normalized_code, manufacturer=manufacturer
+            )
 
+            if not Path(MECHANICDB_FIXES_PATH).exists():
+                with st.spinner("Se descarca mostra publica de proceduri de reparatie..."):
+                    fixes_ok, fixes_message = download_text_dataset(
+                        MECHANICDB_FIXES_URL, MECHANICDB_FIXES_PATH,
+                        ["dtc_code", "fix_title"]
+                    )
+                    parts_ok, parts_message = download_text_dataset(
+                        MECHANICDB_PARTS_URL, MECHANICDB_PARTS_PATH,
+                        ["fix_id", "part_name"]
+                    )
+                st.session_state["mechanicdb_message"] = (
+                    fixes_message if fixes_ok else fixes_message
+                )
             if not Path(OBDEX_PATH).exists():
                 with st.spinner("Se descarca prima data catalogul explicativ cu peste 9.500 de coduri..."):
                     ok, message = download_obdex_dataset()
@@ -1964,6 +2016,12 @@ def page_dtc_diagnosis():
         return
 
     st.subheader(f"Rezultate pentru {current_code}")
+    st.caption(
+        "Producator selectat: " +
+        st.session_state.get("dtc_manufacturer", "Toate marcile")
+    )
+    if st.session_state.get("dtc_database_message"):
+        st.caption(st.session_state["dtc_database_message"])
 
     obdex_record = get_obdex_record(current_code)
     local = lookup_local_diagnosis(current_code)
@@ -2000,6 +2058,13 @@ def page_dtc_diagnosis():
     if not parts.empty:
         st.markdown("### Piese asociate – mostra MechanicDB")
         st.dataframe(translate_dtc_dataframe(parts), use_container_width=True, hide_index=True)
+
+    if fixes.empty:
+        st.info(
+            "Nu exista procedura de reparatie in mostra gratuita pentru acest cod. "
+            "Aceasta mostra contine doar un numar limitat de coduri; lipsa procedurii "
+            "nu inseamna ca defectul nu are o solutie."
+        )
 
     if not obdex_record and not local and results.empty and fixes.empty:
         st.warning(
@@ -2047,21 +2112,22 @@ def page_dtc_search():
     col1, col2 = st.columns(2)
 
     with col1:
-        code = st.text_input(
-            "Cod DTC",
-            placeholder="P0300"
-        )
+        code = st.text_input("Cod DTC", placeholder="P0300")
 
     with col2:
-        term = st.text_input(
-            "Cuvant din descriere"
-        )
+        term = st.text_input("Cuvant din descriere")
+
+    manufacturer = st.selectbox(
+        "Filtreaza dupa producator",
+        ["Toate marcile"] + get_dtc_manufacturers()
+    )
 
     if st.button("Cauta coduri"):
 
         results = search_dtc(
             code=code,
-            search_term=term
+            search_term=term,
+            manufacturer=manufacturer
         )
 
         st.session_state["dtc_library_results"] = results
