@@ -1005,6 +1005,66 @@ def search_database_table(db_path, table_name, search_term=""):
 # CAUTARE GENERATII SI MOTOARE
 # ============================================================
 
+def search_vehicle_generations(make="", model=""):
+    """Afiseaza toate generatiile unui model, inclusiv fara motoare asociate."""
+    conn = get_external_db(ENGINES_DB_PATH)
+    if conn is None:
+        return pd.DataFrame()
+
+    try:
+        required = ["makes", "models", "generations"]
+        if not all(table_exists(conn, table) for table in required):
+            return pd.DataFrame()
+
+        cols = {table: get_table_columns(conn, table) for table in required}
+        make_id = find_existing_column(cols["makes"], ["id", "make_id"])
+        make_name = find_existing_column(cols["makes"], ["name", "make", "title"])
+        model_id = find_existing_column(cols["models"], ["id", "model_id"])
+        model_name = find_existing_column(cols["models"], ["name", "model", "title"])
+        model_make_id = find_existing_column(cols["models"], ["make_id", "manufacturer_id"])
+        gen_model_id = find_existing_column(cols["generations"], ["model_id"])
+        gen_name = find_existing_column(cols["generations"], ["name", "generation", "title"])
+        if not all([make_id, make_name, model_id, model_name, model_make_id, gen_model_id]):
+            return pd.DataFrame()
+
+        start_col = find_existing_column(cols["generations"], ["year_start", "start_year", "year_from", "from_year"])
+        end_col = find_existing_column(cols["generations"], ["year_end", "end_year", "year_to", "to_year"])
+        body_col = find_existing_column(cols["generations"], ["body_type", "body", "body_style"])
+
+        select = [
+            f'mk.{quote_identifier(make_name)} AS "Marca"',
+            f'mo.{quote_identifier(model_name)} AS "Model"',
+            (f'g.{quote_identifier(gen_name)} AS "Generatie"' if gen_name else "'Generatie necunoscuta' AS Generatie"),
+            (f'g.{quote_identifier(start_col)} AS "An inceput"' if start_col else "NULL AS \"An inceput\""),
+            (f'g.{quote_identifier(end_col)} AS "An sfarsit"' if end_col else "NULL AS \"An sfarsit\""),
+            (f'g.{quote_identifier(body_col)} AS "Caroserie"' if body_col else "NULL AS Caroserie")
+        ]
+        sql = (
+            "SELECT " + ", ".join(select) +
+            " FROM makes mk JOIN models mo ON "
+            f"mo.{quote_identifier(model_make_id)} = mk.{quote_identifier(make_id)} "
+            "JOIN generations g ON "
+            f"g.{quote_identifier(gen_model_id)} = mo.{quote_identifier(model_id)}"
+        )
+        conditions, params = [], []
+        if make:
+            conditions.append(f"LOWER(CAST(mk.{quote_identifier(make_name)} AS TEXT)) = LOWER(?)")
+            params.append(make)
+        if model:
+            conditions.append(f"LOWER(CAST(mo.{quote_identifier(model_name)} AS TEXT)) LIKE LOWER(?)")
+            params.append(f"%{model}%")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        order_column = start_col or gen_name or gen_model_id
+        sql += f" ORDER BY mo.{quote_identifier(model_name)}, g.{quote_identifier(order_column)}"
+        return pd.read_sql_query(sql, conn, params=params)
+    except Exception as exc:
+        st.warning(f"Nu am putut incarca generatiile: {exc}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
 def search_engine_catalog(
     make="",
     model="",
@@ -2258,6 +2318,33 @@ def page_vehicle_search():
 
     elif "vehicle_results" in st.session_state:
         st.info("Nu exista rezultate pentru cautarea efectuata.")
+
+    if selected_make != "Toate" and model_search.strip():
+        engine_status, _ = get_engine_database_status()
+        if not engine_status:
+            st.info(
+                "Pentru lista completa de generatii si motorizari, "
+                "descarca si catalogul de motoare din pagina «Baze de date si surse»."
+            )
+        else:
+            generations = search_vehicle_generations(
+                make=selected_make,
+                model=model_search.strip()
+            )
+            st.markdown("### Generatii si variante ale modelului")
+            if not generations.empty:
+                st.success(f"Generatii gasite: {len(generations)}")
+                st.dataframe(generations, use_container_width=True, hide_index=True)
+                export_dataframe_csv(
+                    generations,
+                    "generatii_vehicul.csv",
+                    "Descarca toate generatiile CSV"
+                )
+            else:
+                st.info(
+                    "Nu au fost gasite generatii pentru aceasta combinatie in catalogul de motoare."
+                )
+
 
 
 # ============================================================
