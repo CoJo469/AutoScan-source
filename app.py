@@ -2,7 +2,9 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
+import urllib.request
 from pathlib import Path
+import os
 
 # =====================================================
 # CONFIGURARE
@@ -22,6 +24,11 @@ DIAGNOSIS_DB_PATH = DATA_DIR / "diagnosis.db"
 VEHICLES_DB_PATH = DATA_DIR / "vehicles.db"
 
 DATA_DIR.mkdir(exist_ok=True)
+
+VEHICLES_URL = (
+    "https://github.com/vehiclesdb/vehiclesdb/"
+    "releases/latest/download/catalog.sqlite"
+)
 
 VEHICLES_SOURCE = "https://github.com/vehiclesdb/vehiclesdb"
 
@@ -52,11 +59,153 @@ div[data-testid="stMetric"] {
 
 
 # =====================================================
+# VEHICLES DATABASE - VALIDARE SI DESCARCARE
+# =====================================================
+
+def validate_vehicles_database(path):
+
+    if not path.exists():
+        return False, "Fișierul nu există."
+
+    try:
+        if path.stat().st_size < 100000:
+            return False, "Fișierul este prea mic."
+
+        with open(path, "rb") as file:
+            header = file.read(16)
+
+        if header != b"SQLite format 3\x00":
+            return False, "Fișierul nu are format SQLite."
+
+        conn = sqlite3.connect(
+            f"file:{path}?mode=ro",
+            uri=True
+        )
+
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA quick_check")
+        result = cursor.fetchone()
+
+        if not result or result[0] != "ok":
+            conn.close()
+            return False, "Verificarea SQLite a eșuat."
+
+        cursor.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+        """)
+
+        tables = {
+            row[0] for row in cursor.fetchall()
+        }
+
+        required_tables = {
+            "makes",
+            "models",
+            "availability",
+            "popularity",
+            "meta"
+        }
+
+        if not required_tables.issubset(tables):
+            conn.close()
+            return False, "Lipsesc tabele necesare."
+
+        conn.close()
+
+        return True, None
+
+    except Exception as e:
+        return False, str(e)
+
+
+def download_vehicles_database():
+
+    temporary_path = DATA_DIR / "vehicles_download.tmp"
+
+    try:
+
+        request = urllib.request.Request(
+            VEHICLES_URL,
+            headers={
+                "User-Agent": "Auto-Diagnosis-Pro/1.0"
+            }
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=90
+        ) as response:
+
+            with open(temporary_path, "wb") as file:
+
+                while True:
+                    chunk = response.read(1024 * 1024)
+
+                    if not chunk:
+                        break
+
+                    file.write(chunk)
+
+        valid, error = validate_vehicles_database(
+            temporary_path
+        )
+
+        if not valid:
+            raise Exception(
+                f"Baza descărcată nu este validă: {error}"
+            )
+
+        os.replace(
+            temporary_path,
+            VEHICLES_DB_PATH
+        )
+
+        return True, None
+
+    except Exception as e:
+
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+        return False, str(e)
+
+
+def prepare_vehicles_database():
+
+    valid, error = validate_vehicles_database(
+        VEHICLES_DB_PATH
+    )
+
+    if valid:
+        return True, "Baza VehiclesDB existentă este validă."
+
+    success, download_error = download_vehicles_database()
+
+    if success:
+        return True, "Baza VehiclesDB a fost descărcată și verificată."
+
+    return False, (
+        "Nu am putut pregăti baza VehiclesDB. "
+        f"Motiv: {download_error}"
+    )
+
+
+# Verificăm și pregătim baza înainte de conectare.
+vehicles_ready, vehicles_status = (
+    prepare_vehicles_database()
+)
+
+
+# =====================================================
 # DATABASE CONNECTIONS
 # =====================================================
 
 @st.cache_resource
 def get_dtc_connection():
+
     if not DTC_DB_PATH.exists():
         return None
 
@@ -72,7 +221,8 @@ def get_dtc_connection():
 
 @st.cache_resource
 def get_vehicles_connection():
-    if not VEHICLES_DB_PATH.exists():
+
+    if not vehicles_ready:
         return None
 
     try:
@@ -87,11 +237,14 @@ def get_vehicles_connection():
 
 @st.cache_resource
 def get_diagnosis_connection():
+
     conn = sqlite3.connect(
         DIAGNOSIS_DB_PATH,
         check_same_thread=False
     )
+
     create_diagnosis_database(conn)
+
     return conn
 
 
@@ -117,12 +270,14 @@ def create_diagnosis_database(conn):
     """)
 
     conn.commit()
+
     insert_initial_diagnosis(conn)
 
 
 def insert_initial_diagnosis(conn):
 
     data = [
+
         (
             "P0300",
             "Random / Multiple Cylinder Misfire Detected",
@@ -152,6 +307,7 @@ Remediază pierderile de aer.
 Investigarea mecanică este necesară dacă există compresie scăzută.""",
             "Nu înlocui componente fără verificări."
         ),
+
         (
             "P0171",
             "System Too Lean - Bank 1",
@@ -178,6 +334,7 @@ Curăță sau înlocuiește MAF numai dacă testele confirmă.
 Verifică sistemul de alimentare.""",
             "Interpretează fuel trims în condiții de funcționare cunoscute."
         ),
+
         (
             "P0420",
             "Catalyst System Efficiency Below Threshold - Bank 1",
@@ -202,6 +359,7 @@ Remediază problemele de amestec sau misfire.
 Înlocuiește catalizatorul numai dacă testele confirmă degradarea.""",
             "P0420 nu înseamnă automat catalizator defect."
         ),
+
         (
             "P0128",
             "Coolant Thermostat Below Regulating Temperature",
@@ -222,6 +380,7 @@ Probleme cablaj.""",
 Verifică senzorul și circuitul dacă temperatura raportată este incorectă.""",
             "Ține cont de temperatura ambientală și de motor."
         ),
+
         (
             "P0101",
             "Mass Air Flow Circuit Range / Performance",
@@ -250,9 +409,18 @@ Curăță MAF numai cu produs adecvat.
     cursor = conn.cursor()
 
     for item in data:
+
         cursor.execute("""
             INSERT OR IGNORE INTO diagnosis
-            (dtc_code, title, symptoms, causes, checks, repair, notes)
+            (
+                dtc_code,
+                title,
+                symptoms,
+                causes,
+                checks,
+                repair,
+                notes
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, item)
 
@@ -272,12 +440,18 @@ def search_dtc(code):
 
     try:
         return pd.read_sql_query("""
-            SELECT code, manufacturer, description,
-                   type, locale, is_generic
+            SELECT
+                code,
+                manufacturer,
+                description,
+                type,
+                locale,
+                is_generic
             FROM dtc_definitions
             WHERE UPPER(code) = ?
             ORDER BY manufacturer
         """, conn, params=(code.upper().strip(),))
+
     except Exception:
         return pd.DataFrame()
 
@@ -285,12 +459,17 @@ def search_dtc(code):
 def get_diagnosis(code):
 
     conn = get_diagnosis_connection()
-
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT dtc_code, title, symptoms,
-               causes, checks, repair, notes
+        SELECT
+            dtc_code,
+            title,
+            symptoms,
+            causes,
+            checks,
+            repair,
+            notes
         FROM diagnosis
         WHERE UPPER(dtc_code) = ?
         LIMIT 1
@@ -302,8 +481,13 @@ def get_diagnosis(code):
         return None
 
     keys = [
-        "dtc_code", "title", "symptoms",
-        "causes", "checks", "repair", "notes"
+        "dtc_code",
+        "title",
+        "symptoms",
+        "causes",
+        "checks",
+        "repair",
+        "notes"
     ]
 
     return dict(zip(keys, row))
@@ -319,7 +503,9 @@ def get_statistics():
     try:
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(*) FROM dtc_definitions")
+        cursor.execute(
+            "SELECT COUNT(*) FROM dtc_definitions"
+        )
         definitions = cursor.fetchone()[0]
 
         cursor.execute(
@@ -350,79 +536,16 @@ def get_manufacturers():
             ORDER BY manufacturer
         """)
 
-        return [row[0] for row in cursor.fetchall()]
+        return [
+            row[0] for row in cursor.fetchall()
+        ]
 
     except Exception:
         return []
 
 
 # =====================================================
-# VEHICLE DATABASE DIAGNOSTICS
-# =====================================================
-
-def get_vehicle_database_info():
-
-    conn = get_vehicles_connection()
-
-    if conn is None:
-        return None, "Nu se poate deschide vehicles.db."
-
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT name, sql
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name NOT LIKE 'sqlite_%'
-            ORDER BY name
-        """)
-
-        tables = cursor.fetchall()
-
-        return tables, None
-
-    except sqlite3.Error as e:
-        return None, str(e)
-
-
-def get_vehicle_table_preview(table_name):
-
-    conn = get_vehicles_connection()
-
-    if conn is None:
-        return None, None, "Baza nu este disponibilă."
-
-    try:
-        cursor = conn.cursor()
-
-        # Verificăm că tabelul există în baza SQLite.
-        cursor.execute("""
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name = ?
-        """, (table_name,))
-
-        if cursor.fetchone() is None:
-            return None, None, "Tabelul nu există."
-
-        safe_name = table_name.replace('"', '""')
-
-        cursor.execute(f'PRAGMA table_info("{safe_name}")')
-        columns = [row[1] for row in cursor.fetchall()]
-
-        cursor.execute(f'SELECT * FROM "{safe_name}" LIMIT 3')
-        rows = cursor.fetchall()
-
-        return columns, rows, None
-
-    except sqlite3.Error as e:
-        return None, None, str(e)
-
-
-# =====================================================
-# VEHICLE FUNCTIONS - INITIAL COMPATIBILITY CHECK
+# VEHICLE FUNCTIONS
 # =====================================================
 
 def get_vehicle_statistics():
@@ -435,22 +558,126 @@ def get_vehicle_statistics():
     try:
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT COUNT(*)
-            FROM makes
-        """)
+        cursor.execute("SELECT COUNT(*) FROM makes")
         makes_count = cursor.fetchone()[0]
 
-        cursor.execute("""
-            SELECT COUNT(*)
-            FROM models
-        """)
+        cursor.execute("SELECT COUNT(*) FROM models")
         models_count = cursor.fetchone()[0]
 
         return makes_count, models_count
 
     except sqlite3.Error:
         return 0, 0
+
+
+def get_vehicle_kinds():
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return []
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT DISTINCT kind
+        FROM makes
+        ORDER BY kind
+    """)
+
+    return [
+        row[0] for row in cursor.fetchall()
+    ]
+
+
+def get_vehicle_makes(kind):
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return []
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT DISTINCT name
+        FROM makes
+        WHERE kind = ?
+        ORDER BY name
+    """, (kind,))
+
+    return [
+        row[0] for row in cursor.fetchall()
+    ]
+
+
+def search_vehicles(kind, make, search_text):
+
+    conn = get_vehicles_connection()
+
+    if conn is None:
+        return pd.DataFrame()
+
+    query = """
+        SELECT
+            m.kind AS category,
+            mk.name AS make,
+            m.name AS model,
+            m.body_types AS body_types,
+            m.year_start AS year_start,
+            m.year_end AS year_end,
+            GROUP_CONCAT(
+                DISTINCT a.country
+            ) AS countries
+
+        FROM models m
+
+        JOIN makes mk
+            ON mk.id = m.make_id
+            AND mk.kind = m.kind
+
+        LEFT JOIN availability a
+            ON a.model_id = m.id
+            AND a.kind = m.kind
+
+        WHERE m.kind = ?
+    """
+
+    params = [kind]
+
+    if make != "Toate mărcile":
+        query += " AND mk.name = ?"
+        params.append(make)
+
+    if search_text.strip():
+        query += " AND LOWER(m.name) LIKE ?"
+        params.append(
+            f"%{search_text.strip().lower()}%"
+        )
+
+    query += """
+        GROUP BY
+            m.id,
+            m.kind,
+            mk.name,
+            m.name,
+            m.body_types,
+            m.year_start,
+            m.year_end
+
+        ORDER BY mk.name, m.name
+        LIMIT 500
+    """
+
+    try:
+        return pd.read_sql_query(
+            query,
+            conn,
+            params=params
+        )
+
+    except Exception:
+        return pd.DataFrame()
 
 
 # =====================================================
@@ -482,10 +709,10 @@ else:
 if DIAGNOSIS_DB_PATH.exists():
     st.sidebar.success("Diagnosis Database: OK")
 
-if VEHICLES_DB_PATH.exists():
+if vehicles_ready:
     st.sidebar.success("Vehicle Database: OK")
 else:
-    st.sidebar.error("Vehicle Database: Missing")
+    st.sidebar.error("Vehicle Database: Error")
 
 st.sidebar.caption("Auto Diagnosis Pro")
 
@@ -501,14 +728,22 @@ if page == "Dashboard":
         unsafe_allow_html=True
     )
 
-    st.write("Platformă de diagnostic și informații auto.")
+    st.write(
+        "Platformă de diagnostic și informații auto."
+    )
 
     definitions, codes = get_statistics()
-    makes_count, models_count = get_vehicle_statistics()
+
+    makes_count, models_count = (
+        get_vehicle_statistics()
+    )
 
     conn = get_diagnosis_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM diagnosis")
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM diagnosis"
+    )
     diagnosis_count = cursor.fetchone()[0]
 
     c1, c2, c3 = st.columns(3)
@@ -526,6 +761,11 @@ if page == "Dashboard":
     v1.metric("Mărci auto", f"{makes_count:,}")
     v2.metric("Modele auto", f"{models_count:,}")
 
+    if vehicles_ready:
+        st.success(vehicles_status)
+    else:
+        st.error(vehicles_status)
+
     st.markdown("---")
 
     st.subheader("Module disponibile")
@@ -533,24 +773,42 @@ if page == "Dashboard":
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.info("🔍 DTC Diagnosis\n\nDiagnostic detaliat al codurilor.")
+        st.info(
+            "🔍 DTC Diagnosis\n\n"
+            "Diagnostic detaliat al codurilor."
+        )
 
     with col2:
-        st.info("🔎 DTC Search\n\nCăutare în baza DTC.")
+        st.info(
+            "🔎 DTC Search\n\n"
+            "Căutare în baza DTC."
+        )
 
     with col3:
-        st.info("🚗 Vehicle Search\n\nCăutare după vehicul.")
+        st.info(
+            "🚗 Vehicle Search\n\n"
+            "Căutare după vehicul."
+        )
 
     col4, col5, col6 = st.columns(3)
 
     with col4:
-        st.info("🛠️ Repair Cases\n\nCazuri și reparații.")
+        st.info(
+            "🛠️ Repair Cases\n\n"
+            "Cazuri și reparații."
+        )
 
     with col5:
-        st.info("🗄️ Database\n\nStatistici și baze de date.")
+        st.info(
+            "🗄️ Database\n\n"
+            "Statistici și baze de date."
+        )
 
     with col6:
-        st.info("📚 Diagnosis Library\n\nFișe de diagnostic dezvoltate.")
+        st.info(
+            "📚 Diagnosis Library\n\n"
+            "Fișe de diagnostic dezvoltate."
+        )
 
 
 # =====================================================
@@ -561,7 +819,9 @@ elif page == "DTC Diagnosis":
 
     st.title("🔍 DTC Diagnosis")
 
-    st.write("Caută un cod de eroare pentru a vedea diagnosticul.")
+    st.write(
+        "Caută un cod de eroare pentru a vedea diagnosticul."
+    )
 
     col1, col2 = st.columns([2, 1])
 
@@ -582,7 +842,10 @@ elif page == "DTC Diagnosis":
     if st.button("🔎 Caută codul", type="primary") and code:
         st.session_state["selected_dtc"] = code
 
-    code = st.session_state.get("selected_dtc", code)
+    code = st.session_state.get(
+        "selected_dtc",
+        code
+    )
 
     if code:
 
@@ -594,12 +857,15 @@ elif page == "DTC Diagnosis":
         if selected_manufacturer != "Toți producătorii":
             if not dtc_data.empty:
                 dtc_data = dtc_data[
-                    dtc_data["manufacturer"] == selected_manufacturer
+                    dtc_data["manufacturer"]
+                    == selected_manufacturer
                 ]
 
         if dtc_data.empty:
 
-            st.error("Codul nu a fost găsit pentru filtrul selectat.")
+            st.error(
+                "Codul nu a fost găsit pentru filtrul selectat."
+            )
 
         else:
 
@@ -607,9 +873,13 @@ elif page == "DTC Diagnosis":
 
             first = dtc_data.iloc[0]
 
-            st.subheader(f"{code} — {first['description']}")
+            st.subheader(
+                f"{code} — {first['description']}"
+            )
 
-            st.write("**Producători și definiții disponibile:**")
+            st.write(
+                "**Producători și definiții disponibile:**"
+            )
 
             st.dataframe(
                 dtc_data,
@@ -655,7 +925,9 @@ elif page == "DTC Search":
 
     st.title("🔎 DTC Search")
 
-    st.write("Caută după cod, descriere sau producător.")
+    st.write(
+        "Caută după cod, descriere sau producător."
+    )
 
     search = st.text_input(
         "Termen de căutare",
@@ -674,14 +946,22 @@ elif page == "DTC Search":
         conn = get_dtc_connection()
 
         if conn is None:
+
             st.error("Baza DTC nu a fost găsită.")
 
         else:
 
             query = """
-                SELECT code, manufacturer, description,
-                       type, locale, is_generic
+                SELECT
+                    code,
+                    manufacturer,
+                    description,
+                    type,
+                    locale,
+                    is_generic
+
                 FROM dtc_definitions
+
                 WHERE (
                     UPPER(code) LIKE ?
                     OR LOWER(description) LIKE ?
@@ -702,13 +982,16 @@ elif page == "DTC Search":
             query += " ORDER BY code LIMIT 300"
 
             try:
+
                 df = pd.read_sql_query(
                     query,
                     conn,
                     params=params
                 )
 
-                st.success(f"{len(df)} rezultate găsite.")
+                st.success(
+                    f"{len(df)} rezultate găsite."
+                )
 
                 st.dataframe(
                     df,
@@ -717,11 +1000,12 @@ elif page == "DTC Search":
                 )
 
             except Exception as e:
+
                 st.error(f"Eroare la căutare: {e}")
 
 
 # =====================================================
-# VEHICLE SEARCH - DIAGNOSTIC
+# VEHICLE SEARCH
 # =====================================================
 
 elif page == "Vehicle Search":
@@ -729,104 +1013,109 @@ elif page == "Vehicle Search":
     st.title("🚗 Vehicle Search")
 
     st.write(
-        "Verificăm structura reală a bazei de date vehicles.db."
+        "Caută mărci și modele din baza de date VehiclesDB."
     )
 
-    if not VEHICLES_DB_PATH.exists():
+    if not vehicles_ready:
 
-        st.error(
-            "Fișierul vehicles.db nu există în folderul data."
-        )
+        st.error(vehicles_status)
+
+        if st.button("Încearcă din nou descărcarea"):
+            st.cache_resource.clear()
+            st.rerun()
 
     else:
 
-        tables, error = get_vehicle_database_info()
+        makes_count, models_count = (
+            get_vehicle_statistics()
+        )
 
-        if error:
+        c1, c2 = st.columns(2)
 
-            st.error(f"Eroare la citirea bazei: {error}")
+        c1.metric("Mărci în baza de date", f"{makes_count:,}")
+        c2.metric("Modele în baza de date", f"{models_count:,}")
 
-        elif not tables:
+        st.markdown("---")
 
-            st.error(
-                "Baza de date nu conține tabele."
+        kinds = get_vehicle_kinds()
+
+        kind_labels = {
+            "car": "Autoturisme",
+            "motorcycle": "Motociclete",
+            "moped": "Mopede",
+            "van": "Autoutilitare",
+            "truck": "Camioane",
+            "bus": "Autobuze"
+        }
+
+        if kinds:
+
+            selected_kind = st.selectbox(
+                "Categorie vehicul",
+                kinds,
+                format_func=lambda x: kind_labels.get(
+                    x,
+                    x.capitalize()
+                )
             )
+
+            makes = get_vehicle_makes(selected_kind)
+
+            selected_make = st.selectbox(
+                "Marcă",
+                ["Toate mărcile"] + makes
+            )
+
+            model_search = st.text_input(
+                "Caută model",
+                placeholder="Exemplu: Golf, Corolla, Focus..."
+            )
+
+            if st.button("🔎 Caută vehicule", type="primary"):
+
+                results = search_vehicles(
+                    selected_kind,
+                    selected_make,
+                    model_search
+                )
+
+                if results.empty:
+
+                    st.warning(
+                        "Nu am găsit modele pentru criteriile selectate."
+                    )
+
+                else:
+
+                    st.success(
+                        f"Am găsit {len(results)} rezultate."
+                    )
+
+                    st.dataframe(
+                        results,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    st.caption(
+                        "Sunt afișate maximum 500 de rezultate."
+                    )
 
         else:
 
-            st.success(
-                f"Fișierul vehicles.db a fost deschis. "
-                f"Am găsit {len(tables)} tabele."
+            st.warning(
+                "Nu am putut identifica tipurile de vehicule."
             )
 
-            for table_name, table_sql in tables:
+        st.markdown("---")
 
-                with st.expander(
-                    f"📁 Tabel: {table_name}",
-                    expanded=True
-                ):
+        st.markdown(
+            f"[Sursa datelor: VehiclesDB]({VEHICLES_SOURCE})"
+        )
 
-                    st.write("**Structura SQL:**")
-
-                    st.code(
-                        table_sql or "Structură indisponibilă",
-                        language="sql"
-                    )
-
-                    columns, rows, preview_error = (
-                        get_vehicle_table_preview(table_name)
-                    )
-
-                    if preview_error:
-
-                        st.error(preview_error)
-
-                    else:
-
-                        st.write("**Coloane:**")
-                        st.write(columns)
-
-                        st.write("**Primele 3 înregistrări:**")
-
-                        if rows:
-
-                            preview_df = pd.DataFrame(
-                                rows,
-                                columns=columns
-                            )
-
-                            st.dataframe(
-                                preview_df,
-                                use_container_width=True,
-                                hide_index=True
-                            )
-
-                        else:
-
-                            st.info("Tabelul nu conține înregistrări.")
-
-            st.markdown("---")
-
-            st.subheader("Statistici generale")
-
-            makes_count, models_count = get_vehicle_statistics()
-
-            c1, c2 = st.columns(2)
-
-            c1.metric("Înregistrări în makes", makes_count)
-            c2.metric("Înregistrări în models", models_count)
-
-            st.markdown("---")
-
-            st.info(
-                "Acesta este un diagnostic tehnic temporar. "
-                "După ce identificăm structura exactă, vom activa "
-                "căutarea reală după marcă și model."
-            )
-
-            st.markdown(
-                f"[Sursa bazei de date VehiclesDB]({VEHICLES_SOURCE})"
-            )
+        st.caption(
+            "Date VehiclesDB utilizate conform licenței CC BY 4.0."
+        )
 
 
 # =====================================================
@@ -877,21 +1166,27 @@ elif page == "Database":
         c1.metric("Coduri unice", f"{codes:,}")
         c2.metric("Definiții", f"{definitions:,}")
 
-        st.success(f"Fișier disponibil: {DTC_DB_PATH.name}")
+        st.success(
+            f"Fișier disponibil: {DTC_DB_PATH.name}"
+        )
 
     else:
 
-        st.error("dtc_codes.db nu există în folderul data.")
+        st.error(
+            "dtc_codes.db nu există în folderul data."
+        )
 
     st.markdown("---")
 
     st.subheader("Diagnosis Database")
 
     conn = get_diagnosis_connection()
-
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM diagnosis")
+    cursor.execute(
+        "SELECT COUNT(*) FROM diagnosis"
+    )
+
     count = cursor.fetchone()[0]
 
     st.metric("Fișe de diagnostic", count)
@@ -912,33 +1207,36 @@ elif page == "Database":
 
     st.subheader("Vehicle Database")
 
-    if VEHICLES_DB_PATH.exists():
+    if vehicles_ready:
 
-        tables, error = get_vehicle_database_info()
+        tables_count = 5
 
-        if error:
-            st.error(error)
+        makes_count, models_count = (
+            get_vehicle_statistics()
+        )
 
-        else:
-            st.success(
-                f"vehicles.db disponibilă. "
-                f"Număr tabele: {len(tables)}"
-            )
+        st.success(vehicles_status)
 
-            makes_count, models_count = get_vehicle_statistics()
+        v1, v2 = st.columns(2)
 
-            v1, v2 = st.columns(2)
+        v1.metric("Mărci", f"{makes_count:,}")
+        v2.metric("Modele", f"{models_count:,}")
 
-            v1.metric("Înregistrări makes", f"{makes_count:,}")
-            v2.metric("Înregistrări models", f"{models_count:,}")
+        st.markdown(
+            f"[Sursa datelor: VehiclesDB]({VEHICLES_SOURCE})"
+        )
 
-            st.markdown(
-                f"[Sursa datelor: VehiclesDB]({VEHICLES_SOURCE})"
-            )
+        st.caption(
+            f"Fișier: {VEHICLES_DB_PATH.name}"
+        )
 
     else:
 
-        st.error("vehicles.db nu există în folderul data.")
+        st.error(vehicles_status)
+
+        if st.button("Descarcă din nou baza VehiclesDB"):
+            st.cache_resource.clear()
+            st.rerun()
 
     st.markdown("---")
 
