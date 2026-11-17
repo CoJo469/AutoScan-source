@@ -1,16 +1,17 @@
-import streamlit as st
+import re
 
-st.set_page_config(
-    page_title="Auto Diagnosis PRO",
-    page_icon="🔧",
-    layout="wide"
-)
 
-st.title("🔧 Auto Diagnosis PRO")
+def normalize_dtc(cod: str) -> str:
+    if not cod:
+        return ""
 
-st.write(
-    "Platformă pentru diagnoză auto, coduri DTC, "
-    "simptome, cauze și soluții de reparație."
-)
+    cod = cod.strip().upper()
+    cod = re.sub(r"\s+", "", cod)
 
-st.success("Aplicația funcționează!")
+    return cod
+
+
+def valideaza_dtc(cod: str) -> bool:
+    cod = normalize_dtc(cod)
+
+    return bool(re.fullmatch(r"[PBCU][0-9A-F]{4}", cod))
