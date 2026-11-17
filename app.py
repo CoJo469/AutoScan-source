@@ -2541,15 +2541,54 @@ def page_engine_data():
             f"Motorizari gasite: {len(results)}"
         )
 
+        # Afisare prietenoasa: pastram toate datele in exportul CSV,
+        # dar organizam campurile principale pentru citire in aplicatie.
+        engine_display_columns = {
+            "makes_name": "Marca",
+            "models_name": "Model",
+            "generations_name": "Generatie",
+            "generations_year_start": "An inceput",
+            "generations_year_end": "An sfarsit",
+            "generations_body_type": "Caroserie",
+            "engines_label": "Versiune motor",
+            "engines_fuel_type": "Combustibil",
+            "engines_displacement_cc": "Cilindree (cm³)",
+            "engines_cylinders": "Cilindri",
+            "engines_power_hp": "Putere (CP)",
+            "engines_torque_nm": "Cuplu (Nm)",
+            "engines_transmission": "Transmisie",
+            "engines_drivetrain": "Tractiune",
+            "engines_fuel_economy_combined_l100": "Consum mixt (l/100 km)",
+            "engines_zero_to_hundred_kmh_s": "0-100 km/h (s)",
+            "engines_top_speed_kmh": "Viteza maxima (km/h)",
+            "engines_length_mm": "Lungime (mm)",
+            "engines_width_mm": "Latime (mm)",
+            "engines_height_mm": "Inaltime (mm)",
+            "engines_wheelbase_mm": "Ampatament (mm)",
+            "engines_curb_weight_kg": "Masa proprie (kg)",
+            "engine_specs": "Specificatii suplimentare"
+        }
+        available_columns = [
+            column for column in engine_display_columns
+            if column in results.columns
+        ]
+        display_results = results[available_columns].rename(
+            columns=engine_display_columns
+        )
+
+        st.caption(
+            "Tabelul prezinta specificatiile tehnice disponibile in sursa. "
+            "Campurile fara date raman goale; nu sunt estimate."
+        )
         st.dataframe(
-            results,
+            display_results,
             width="stretch",
             hide_index=True
         )
 
         export_dataframe_csv(
             results,
-            "catalog_motoare.csv"
+            "catalog_motoare_complet.csv"
         )
 
     elif "engine_results" in st.session_state:
