@@ -1312,14 +1312,20 @@ def search_mechanicdb_fixes(code, limit=100):
 
 
 def search_mechanicdb_parts(code, limit=100):
-    frame = read_mechanicdb_csv(MECHANICDB_PARTS_PATH)
-    if frame.empty or not code:
+    """Leaga piesele prin fix_id, asa cum este definita schema MechanicDB."""
+    fixes = search_mechanicdb_fixes(code, limit=500)
+    parts = read_mechanicdb_csv(MECHANICDB_PARTS_PATH)
+    if fixes.empty or parts.empty:
         return pd.DataFrame()
-    code_col = find_existing_column(list(frame.columns), ["dtc_code", "code", "trouble_code"])
-    if not code_col:
+
+    fix_id_col = find_existing_column(list(fixes.columns), ["fix_id", "id"])
+    parts_fix_id_col = find_existing_column(list(parts.columns), ["fix_id"])
+    if not fix_id_col or not parts_fix_id_col:
         return pd.DataFrame()
-    mask = frame[code_col].astype(str).str.upper().str.strip() == str(code).upper().strip()
-    return frame.loc[mask].head(limit)
+
+    fix_ids = set(fixes[fix_id_col].dropna().astype(str).str.strip())
+    mask = parts[parts_fix_id_col].astype(str).str.strip().isin(fix_ids)
+    return parts.loc[mask].head(limit)
 
 
 # ============================================================
