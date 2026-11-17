@@ -1,741 +1,461 @@
+import sqlite3
+from pathlib import Path
 import streamlit as st
 import pandas as pd
-import sqlite3
-import re
-from pathlib import Path
-
 
 # =========================================================
 # CONFIGURARE
 # =========================================================
 
 st.set_page_config(
-    page_title="Auto Diagnosis PRO",
+    page_title="Auto Diagnosis Pro",
     page_icon="🔧",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
+
+DTC_DB_PATH = DATA_DIR / "dtc_codes.db"
+DIAGNOSIS_DB_PATH = DATA_DIR / "diagnosis.db"
+
+DATA_DIR.mkdir(exist_ok=True)
+
 
 # =========================================================
-# CONSTANTE
+# CONECTARE DATABASE
 # =========================================================
 
-APP_TITLE = "Auto Diagnosis PRO"
+@st.cache_resource
+def get_dtc_connection():
+    if not DTC_DB_PATH.exists():
+        return None
 
-DTC_DB_PATH = Path(__file__).parent / "data" / "dtc_codes.db"
+    return sqlite3.connect(
+        f"file:{DTC_DB_PATH}?mode=ro",
+        uri=True,
+        check_same_thread=False
+    )
+
+
+@st.cache_resource
+def get_diagnosis_connection():
+    conn = sqlite3.connect(
+        DIAGNOSIS_DB_PATH,
+        check_same_thread=False
+    )
+
+    create_diagnosis_database(conn)
+
+    return conn
 
 
 # =========================================================
-# VEHICULE DEMO
-# =========================================================
-# Aceasta este doar baza inițială de vehicule.
-# În etapa următoare o vom înlocui cu o bază mult mai mare.
+# CREARE BAZA DE DIAGNOSTIC
 # =========================================================
 
-VEHICLES = {
-    "Volkswagen": {
-        "Golf": {
-            "2018": [
-                "1.6 TDI",
-                "2.0 TDI",
-                "1.4 TSI"
-            ],
-            "2019": [
-                "1.6 TDI",
-                "2.0 TDI",
-                "1.5 TSI"
-            ],
-            "2020": [
-                "2.0 TDI",
-                "1.5 TSI"
-            ],
-        },
+def create_diagnosis_database(conn):
 
-        "Passat": {
-            "2018": [
-                "1.6 TDI",
-                "2.0 TDI"
-            ],
-            "2019": [
-                "2.0 TDI"
-            ],
-            "2020": [
-                "2.0 TDI",
-                "1.5 TSI"
-            ],
-        },
-    },
+    cursor = conn.cursor()
 
-    "BMW": {
-        "Seria 3": {
-            "2018": [
-                "320d",
-                "330i"
-            ],
-            "2019": [
-                "320d",
-                "330i"
-            ],
-            "2020": [
-                "320d",
-                "330i"
-            ],
-        },
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS diagnosis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dtc_code TEXT UNIQUE NOT NULL,
+            title TEXT,
+            symptoms TEXT,
+            causes TEXT,
+            checks TEXT,
+            repair TEXT,
+            notes TEXT
+        )
+    """)
 
-        "Seria 5": {
-            "2018": [
-                "520d",
-                "530d"
-            ],
-            "2019": [
-                "520d",
-                "530d"
-            ],
-            "2020": [
-                "520d",
-                "530e"
-            ],
-        },
-    },
+    conn.commit()
 
-    "Audi": {
-        "A4": {
-            "2018": [
-                "2.0 TDI",
-                "2.0 TFSI"
-            ],
-            "2019": [
-                "2.0 TDI",
-                "2.0 TFSI"
-            ],
-            "2020": [
-                "2.0 TDI",
-                "2.0 TFSI"
-            ],
-        },
+    insert_initial_diagnosis(conn)
 
-        "A6": {
-            "2018": [
-                "2.0 TDI",
-                "3.0 TDI"
-            ],
-            "2019": [
-                "2.0 TDI",
-                "3.0 TDI"
-            ],
-            "2020": [
-                "2.0 TDI",
-                "3.0 TDI"
-            ],
-        },
-    },
 
-    "Ford": {
-        "Focus": {
-            "2018": [
-                "1.5 TDCi",
-                "1.0 EcoBoost"
-            ],
-            "2019": [
-                "1.5 EcoBlue",
-                "1.0 EcoBoost"
-            ],
-            "2020": [
-                "1.5 EcoBlue",
-                "1.0 EcoBoost"
-            ],
-        },
+# =========================================================
+# DATE INITIALE DE DIAGNOSTIC
+# =========================================================
 
-        "Mondeo": {
-            "2018": [
-                "2.0 TDCi",
-                "2.0 EcoBoost"
-            ],
-            "2019": [
-                "2.0 EcoBlue"
-            ],
-            "2020": [
-                "2.0 EcoBlue"
-            ],
-        },
-    },
-}
+def insert_initial_diagnosis(conn):
+
+    cursor = conn.cursor()
+
+    data = [
+
+        (
+            "P0300",
+            "Random / Multiple Cylinder Misfire Detected",
+
+            """Motorul poate funcționa neregulat.
+Pot apărea vibrații la ralanti.
+Poate exista pierdere de putere.
+Martorul Check Engine poate fi aprins.
+În unele situații motorul poate porni greu.""",
+
+            """Bujii uzate sau deteriorate.
+Bobină de inducție defectă.
+Injector cu debit incorect.
+Presiune combustibil insuficientă.
+Admisie de aer fals.
+Compresie scăzută pe unul sau mai mulți cilindri.
+Probleme de sincronizare.
+Probleme ale sistemului de aprindere.""",
+
+            """1. Verifică freeze-frame-ul codului.
+2. Verifică misfire counters pentru fiecare cilindru.
+3. Verifică starea bujiilor.
+4. Verifică bobinele de inducție.
+5. Verifică injectoarele.
+6. Verifică presiunea combustibilului.
+7. Verifică eventualele pierderi de vacuum.
+8. Dacă problema persistă, efectuează test de compresie.
+9. Verifică sincronizarea motorului dacă există indicii.""",
+
+            """Repararea trebuie făcută în funcție de cauza confirmată.
+
+Înlocuiește bujiile dacă sunt uzate.
+Înlocuiește bobina defectă.
+Verifică sau înlocuiește injectorul defect.
+Remediază pierderile de aer.
+Remediază problema de alimentare cu combustibil.
+Dacă există compresie scăzută, este necesară investigarea mecanică a motorului.""",
+
+            "Nu înlocui componente la întâmplare. Confirmă cauza prin teste."
+        ),
+
+        (
+            "P0171",
+            "System Too Lean - Bank 1",
+
+            """Ralanti instabil.
+Motorul poate avea ezitări la accelerație.
+Poate apărea pierdere de putere.
+Consum crescut în anumite situații.
+Martor Check Engine aprins.""",
+
+            """Pierdere de vacuum.
+Furtun de admisie fisurat.
+Debitmetru MAF contaminat sau defect.
+Presiune combustibil insuficientă.
+Injector cu debit redus.
+Senzor O2/A/F cu funcționare incorectă.
+Probleme ale sistemului PCV.""",
+
+            """1. Verifică fuel trims STFT și LTFT.
+2. Verifică eventualele pierderi de vacuum.
+3. Inspectează furtunurile de admisie.
+4. Verifică valorile MAF.
+5. Verifică presiunea combustibilului.
+6. Verifică injectoarele.
+7. Analizează valorile senzorului O2/A/F.
+8. Compară comportamentul motorului la ralanti și la turație.""",
+
+            """Remediază cauza confirmată.
+
+Repară furtunurile fisurate.
+Remediază pierderile de vacuum.
+Curăță sau înlocuiește MAF dacă testele confirmă problema.
+Remediază alimentarea cu combustibil.
+Verifică sau înlocuiește injectorul defect.""",
+
+            "Fuel trims trebuie interpretate împreună cu condițiile de funcționare ale motorului."
+        ),
+
+        (
+            "P0420",
+            "Catalyst System Efficiency Below Threshold - Bank 1",
+
+            """Martor Check Engine.
+Uneori nu există simptome evidente.
+Poate apărea consum crescut.
+În anumite situații pot exista probleme de performanță sau miros neobișnuit al gazelor.""",
+
+            """Catalizator degradat.
+Senzor O2 defect.
+Scăpări pe evacuare.
+Motor care funcționează cu amestec incorect.
+Misfire-uri repetate.
+Consum de ulei.
+Probleme ale sistemului de alimentare.""",
+
+            """1. Verifică existența altor coduri DTC.
+2. Verifică misfire-urile.
+3. Verifică fuel trims.
+4. Verifică eventualele scăpări pe evacuare.
+5. Compară semnalele senzorilor O2.
+6. Verifică temperatura catalizatorului.
+7. Analizează datele live înainte de a condamna catalizatorul.""",
+
+            """Nu înlocui direct catalizatorul.
+
+Identifică mai întâi cauza care a dus la eficiență redusă.
+Dacă testele confirmă degradarea catalizatorului, acesta poate necesita înlocuire.""",
+
+            "Un P0420 nu înseamnă automat că senzorul O2 este defect sau că trebuie schimbat imediat catalizatorul."
+        ),
+
+        (
+            "P0128",
+            "Coolant Thermostat / Coolant Temperature Below Regulating Temperature",
+
+            """Motorul ajunge greu la temperatura normală.
+Temperatura poate rămâne prea scăzută.
+Încălzirea habitaclului poate fi slabă.
+Consum crescut de combustibil în anumite condiții.""",
+
+            """Termostat blocat deschis.
+Senzor temperatură lichid răcire cu valori incorecte.
+Nivel scăzut al lichidului de răcire.
+Probleme ale circuitului de răcire.
+Probleme de cablaj sau conector.""",
+
+            """1. Verifică temperatura reală a motorului.
+2. Compară temperatura ECU cu temperatura măsurată.
+3. Verifică nivelul lichidului de răcire.
+4. Verifică funcționarea termostatului.
+5. Verifică senzorul ECT.
+6. Verifică mufa și cablajul senzorului.""",
+
+            """Dacă termostatul este blocat deschis și testele confirmă problema, înlocuiește termostatul.
+
+Dacă temperatura raportată este incorectă, verifică senzorul ECT și circuitul acestuia.""",
+
+            "Interpretarea temperaturii trebuie făcută în funcție de motor și temperatura ambientală."
+        ),
+
+        (
+            "P0101",
+            "Mass or Volume Air Flow Circuit Range / Performance",
+
+            """Ralanti instabil.
+Ezitare la accelerație.
+Pierdere de putere.
+Consum crescut.
+Motorul poate funcționa cu amestec incorect.""",
+
+            """MAF contaminat.
+MAF defect.
+Filtru de aer foarte murdar.
+Pierdere de aer după MAF.
+Probleme de alimentare.
+Probleme de cablaj sau conector.
+Probleme ale sistemului PCV.""",
+
+            """1. Verifică furtunul dintre MAF și clapeta de accelerație.
+2. Verifică eventualele pierderi de aer.
+3. Verifică filtrul de aer.
+4. Analizează valorile MAF live.
+5. Verifică alimentarea și masa senzorului.
+6. Verifică conectorul și cablajul.
+7. Compară valorile MAF cu valorile așteptate pentru motor.""",
+
+            """Curăță MAF doar dacă procedura este permisă pentru senzorul respectiv.
+
+Dacă testele confirmă defectarea senzorului, acesta poate necesita înlocuire.
+
+Remediază orice pierdere de aer înainte de înlocuirea MAF.""",
+
+            "Nu înlocui MAF doar pe baza codului P0101."
+        )
+    ]
+
+    for item in data:
+
+        cursor.execute("""
+            INSERT OR IGNORE INTO diagnosis (
+                dtc_code,
+                title,
+                symptoms,
+                causes,
+                checks,
+                repair,
+                notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, item)
+
+    conn.commit()
 
 
 # =========================================================
 # FUNCȚII DTC
 # =========================================================
 
-def normalize_dtc(code):
-    """
-    Normalizează codul DTC.
-    Exemplu:
-    ' p0299 ' -> 'P0299'
-    """
+def search_dtc(code):
 
-    if not code:
-        return ""
-
-    code = str(code).strip().upper()
-
-    code = re.sub(
-        r"\s+",
-        "",
-        code
-    )
-
-    return code
-
-
-def validate_dtc(code):
-    """
-    Verifică formatul general:
-    Pxxxx
-    Bxxxx
-    Cxxxx
-    Uxxxx
-    """
-
-    code = normalize_dtc(code)
-
-    pattern = r"^[PBCU][0-9A-F]{4}$"
-
-    return bool(
-        re.fullmatch(
-            pattern,
-            code
-        )
-    )
-
-
-def get_connection():
-    """
-    Deschide conexiunea către baza SQLite.
-    """
-
-    if not DTC_DB_PATH.exists():
-        return None
-
-    return sqlite3.connect(
-        str(DTC_DB_PATH)
-    )
-
-
-def get_database_statistics():
-    """
-    Returnează statistici din baza DTC.
-    """
-
-    conn = get_connection()
-
-    if conn is None:
-        return None
-
-    try:
-
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM dtc_definitions
-            """
-        )
-
-        total_definitions = cursor.fetchone()[0]
-
-        cursor.execute(
-            """
-            SELECT COUNT(DISTINCT code)
-            FROM dtc_definitions
-            """
-        )
-
-        unique_codes = cursor.fetchone()[0]
-
-        cursor.execute(
-            """
-            SELECT COUNT(DISTINCT manufacturer)
-            FROM dtc_definitions
-            WHERE manufacturer != 'GENERIC'
-            """
-        )
-
-        manufacturers = cursor.fetchone()[0]
-
-        cursor.execute(
-            """
-            SELECT COUNT(DISTINCT code)
-            FROM dtc_definitions
-            WHERE is_generic = 1
-            """
-        )
-
-        generic_codes = cursor.fetchone()[0]
-
-        return {
-            "total_definitions": total_definitions,
-            "unique_codes": unique_codes,
-            "manufacturers": manufacturers,
-            "generic_codes": generic_codes
-        }
-
-    except Exception:
-        return None
-
-    finally:
-
-        conn.close()
-
-
-def get_manufacturers():
-    """
-    Returnează producătorii existenți în baza DTC.
-    """
-
-    conn = get_connection()
-
-    if conn is None:
-        return []
-
-    try:
-
-        query = """
-            SELECT DISTINCT manufacturer
-            FROM dtc_definitions
-            WHERE manufacturer != 'GENERIC'
-            ORDER BY manufacturer
-        """
-
-        df = pd.read_sql_query(
-            query,
-            conn
-        )
-
-        return df["manufacturer"].tolist()
-
-    except Exception:
-        return []
-
-    finally:
-
-        conn.close()
-
-
-def search_dtc(
-    code,
-    manufacturer=None
-):
-    """
-    Caută un cod DTC.
-
-    Dacă este selectat producătorul:
-    1. caută definiția producătorului
-    2. dacă nu există, folosește definiția generică
-    """
-
-    conn = get_connection()
-
-    if conn is None:
-        return None
-
-    code = normalize_dtc(code)
-
-    try:
-
-        cursor = conn.cursor()
-
-        if manufacturer and manufacturer != "GENERIC":
-
-            query = """
-                SELECT
-                    code,
-                    manufacturer,
-                    description,
-                    type,
-                    locale,
-                    is_generic,
-                    source_file
-
-                FROM dtc_definitions
-
-                WHERE code = ?
-
-                AND locale = 'en'
-
-                AND (
-                    manufacturer = ?
-                    OR manufacturer = 'GENERIC'
-                )
-
-                ORDER BY
-                    CASE
-                        WHEN manufacturer = ? THEN 0
-                        WHEN manufacturer = 'GENERIC' THEN 1
-                        ELSE 2
-                    END
-
-                LIMIT 1
-            """
-
-            cursor.execute(
-                query,
-                (
-                    code,
-                    manufacturer,
-                    manufacturer
-                )
-            )
-
-        else:
-
-            query = """
-                SELECT
-                    code,
-                    manufacturer,
-                    description,
-                    type,
-                    locale,
-                    is_generic,
-                    source_file
-
-                FROM dtc_definitions
-
-                WHERE code = ?
-
-                AND locale = 'en'
-
-                ORDER BY
-                    CASE
-                        WHEN manufacturer = 'GENERIC' THEN 0
-                        ELSE 1
-                    END
-
-                LIMIT 1
-            """
-
-            cursor.execute(
-                query,
-                (code,)
-            )
-
-        result = cursor.fetchone()
-
-        return result
-
-    except Exception:
-        return None
-
-    finally:
-
-        conn.close()
-
-
-def search_dtc_text(
-    keyword,
-    limit=50
-):
-    """
-    Caută după cod sau cuvinte din descriere.
-    """
-
-    conn = get_connection()
+    conn = get_dtc_connection()
 
     if conn is None:
         return pd.DataFrame()
 
-    keyword = str(keyword).strip()
+    query = """
+        SELECT
+            code,
+            manufacturer,
+            description,
+            type,
+            locale,
+            is_generic
+        FROM dtc_definitions
+        WHERE UPPER(code) = ?
+        ORDER BY manufacturer
+    """
 
     try:
-
-        query = """
-            SELECT
-                code,
-                manufacturer,
-                description,
-                type,
-                is_generic
-
-            FROM dtc_definitions
-
-            WHERE locale = 'en'
-
-            AND (
-                code LIKE ?
-                OR description LIKE ?
-            )
-
-            ORDER BY
-                CASE
-                    WHEN manufacturer = 'GENERIC'
-                    THEN 0
-                    ELSE 1
-                END,
-                code
-
-            LIMIT ?
-        """
-
-        search_value = f"%{keyword}%"
-
-        df = pd.read_sql_query(
+        return pd.read_sql_query(
             query,
             conn,
-            params=(
-                search_value,
-                search_value,
-                limit
-            )
+            params=(code.upper().strip(),)
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_diagnosis(code):
+
+    conn = get_diagnosis_connection()
+
+    query = """
+        SELECT *
+        FROM diagnosis
+        WHERE UPPER(dtc_code) = ?
+        LIMIT 1
+    """
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        query,
+        (code.upper().strip(),)
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    columns = [
+        "id",
+        "dtc_code",
+        "title",
+        "symptoms",
+        "causes",
+        "checks",
+        "repair",
+        "notes"
+    ]
+
+    return dict(zip(columns, row))
+
+
+def get_dtc_statistics():
+
+    conn = get_dtc_connection()
+
+    if conn is None:
+        return 0, 0
+
+    try:
+
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM dtc_definitions"
         )
 
-        return df
+        definitions = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT COUNT(DISTINCT code) FROM dtc_definitions"
+        )
+
+        codes = cursor.fetchone()[0]
+
+        return definitions, codes
 
     except Exception:
 
-        return pd.DataFrame()
-
-    finally:
-
-        conn.close()
-
-
-# =========================================================
-# FUNCȚII VEHICULE
-# =========================================================
-
-def get_models(brand):
-
-    if brand not in VEHICLES:
-        return []
-
-    return list(
-        VEHICLES[brand].keys()
-    )
-
-
-def get_years(
-    brand,
-    model
-):
-
-    if brand not in VEHICLES:
-        return []
-
-    if model not in VEHICLES[brand]:
-        return []
-
-    return list(
-        VEHICLES[brand][model].keys()
-    )
-
-
-def get_engines(
-    brand,
-    model,
-    year
-):
-
-    if brand not in VEHICLES:
-        return []
-
-    if model not in VEHICLES[brand]:
-        return []
-
-    if year not in VEHICLES[brand][model]:
-        return []
-
-    return VEHICLES[
-        brand
-    ][
-        model
-    ][
-        year
-    ]
-
-
-# =========================================================
-# FUNCȚII UI
-# =========================================================
-
-def show_list(items):
-
-    for item in items:
-
-        st.markdown(
-            f"- {item}"
-        )
-
-
-def show_database_error():
-
-    st.error(
-        "Baza DTC nu a fost găsită."
-    )
-
-    st.code(
-        "data/dtc_codes.db"
-    )
-
-    st.info(
-        """
-        Verifică dacă fișierul dtc_codes.db
-        există în folderul data din GitHub.
-        """
-    )
+        return 0, 0
 
 
 # =========================================================
 # SIDEBAR
 # =========================================================
 
-st.sidebar.title(
-    "🔧 Auto Diagnosis PRO"
-)
+st.sidebar.title("🔧 Auto Diagnosis Pro")
 
-st.sidebar.caption(
-    "Platformă de diagnoză auto"
-)
-
-st.sidebar.divider()
-
-menu = st.sidebar.radio(
+page = st.sidebar.radio(
     "Meniu",
     [
-        "🏠 Dashboard",
-        "🔎 DTC Diagnosis",
-        "🔍 DTC Search",
-        "🚗 Vehicle Search",
-        "🧰 Repair Cases",
-        "📊 Database",
+        "Dashboard",
+        "DTC Diagnosis",
+        "DTC Search",
+        "Database"
     ]
 )
 
-st.sidebar.divider()
+st.sidebar.markdown("---")
 
 if DTC_DB_PATH.exists():
-
-    st.sidebar.success(
-        "DTC Database: OK"
-    )
-
+    st.sidebar.success("DTC Database: OK")
 else:
+    st.sidebar.error("DTC Database: lipsă")
 
-    st.sidebar.error(
-        "DTC Database: lipsă"
-    )
+if DIAGNOSIS_DB_PATH.exists():
+    st.sidebar.success("Diagnosis Database: OK")
 
 
 # =========================================================
 # DASHBOARD
 # =========================================================
 
-if menu == "🏠 Dashboard":
+if page == "Dashboard":
 
-    st.title(
-        "🔧 Auto Diagnosis PRO"
-    )
+    st.title("🔧 Auto Diagnosis Pro")
 
-    st.markdown(
-        """
-        ### Platformă pentru diagnoză auto
+    st.subheader("Sistem de diagnostic auto")
 
-        Caută coduri DTC și pregătește diagnosticul
-        pe baza vehiculului și a datelor reale de service.
-        """
-    )
+    definitions, codes = get_dtc_statistics()
 
-    st.divider()
-
-    stats = get_database_statistics()
-
-    if stats:
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-
-            st.metric(
-                "Coduri DTC",
-                f"{stats['unique_codes']:,}"
-            )
-
-        with col2:
-
-            st.metric(
-                "Definiții",
-                f"{stats['total_definitions']:,}"
-            )
-
-        with col3:
-
-            st.metric(
-                "Producători",
-                stats["manufacturers"]
-            )
-
-        with col4:
-
-            st.metric(
-                "Coduri generice",
-                f"{stats['generic_codes']:,}"
-            )
-
-    else:
-
-        show_database_error()
-
-    st.divider()
-
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
-
-        st.subheader(
-            "🔎 Diagnostic DTC"
-        )
-
-        st.markdown(
-            """
-            Introdu un cod precum:
-
-            `P0299`
-
-            `P0101`
-
-            `P0420`
-
-            `U0100`
-
-            și primești definiția din baza DTC.
-            """
-
+        st.metric(
+            "Coduri DTC",
+            f"{codes:,}"
         )
 
     with col2:
-
-        st.subheader(
-            "🚗 Vehicul"
+        st.metric(
+            "Definiții",
+            f"{definitions:,}"
         )
 
-        st.markdown(
-            """
-            Selectează:
+    with col3:
+        conn = get_diagnosis_connection()
 
-            - marca
-            - modelul
-            - anul
-            - motorul
+        cursor = conn.cursor()
 
-            În etapele următoare vom lega aceste
-            informații de DTC-urile specifice vehiculului.
-            """
+        cursor.execute(
+            "SELECT COUNT(*) FROM diagnosis"
         )
 
-    st.divider()
+        diagnostic_count = cursor.fetchone()[0]
 
-    st.success(
-        "Aplicația este conectată la baza DTC locală."
+        st.metric(
+            "Diagnostice dezvoltate",
+            diagnostic_count
+        )
+
+    st.markdown("---")
+
+    st.info(
+        "Baza DTC furnizează codurile și descrierile. "
+        "Baza Diagnosis adaugă simptome, cauze, verificări și soluții."
     )
 
 
@@ -743,199 +463,116 @@ if menu == "🏠 Dashboard":
 # DTC DIAGNOSIS
 # =========================================================
 
-elif menu == "🔎 DTC Diagnosis":
+elif page == "DTC Diagnosis":
 
-    st.title(
-        "🔎 Diagnosticare DTC"
-    )
+    st.title("🔍 DTC Diagnosis")
 
     st.write(
-        "Introdu codul citit cu testerul."
+        "Introdu codul de eroare pentru a vedea informațiile disponibile."
     )
 
-    manufacturers = [
-        "GENERIC"
-    ] + get_manufacturers()
+    code = st.text_input(
+        "Cod DTC",
+        placeholder="Exemplu: P0300"
+    ).upper().strip()
 
-    col1, col2 = st.columns(
-        [2, 1]
-    )
+    if code:
 
-    with col1:
+        st.markdown("---")
 
-        dtc_input = st.text_input(
-            "Cod DTC",
-            placeholder="Exemplu: P0299",
-            key="diagnosis_code"
-        )
+        dtc_data = search_dtc(code)
 
-    with col2:
+        diagnosis = get_diagnosis(code)
 
-        manufacturer = st.selectbox(
-            "Producător",
-            manufacturers,
-            key="diagnosis_manufacturer"
-        )
-
-    search_button = st.button(
-        "🔍 Diagnosticare",
-        type="primary",
-        use_container_width=True
-    )
-
-    if search_button:
-
-        code = normalize_dtc(
-            dtc_input
-        )
-
-        if not code:
-
-            st.warning(
-                "Introdu un cod DTC."
-            )
-
-        elif not validate_dtc(code):
+        if dtc_data.empty:
 
             st.error(
-                f"Codul `{code}` nu are un format DTC valid."
+                f"Codul {code} nu a fost găsit în baza DTC."
             )
 
         else:
 
-            result = search_dtc(
-                code,
-                manufacturer
+            st.success(
+                f"Codul {code} a fost găsit."
             )
 
-            if result is None:
+            first = dtc_data.iloc[0]
 
-                st.warning(
-                    f"Codul {code} nu a fost găsit în baza DTC."
+            st.subheader(
+                f"{code} — {first['description']}"
+            )
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.write(
+                    "**Producător:**",
+                    first["manufacturer"]
                 )
 
+            with col2:
+                st.write(
+                    "**Tip:**",
+                    first["type"]
+                )
+
+            with col3:
+                st.write(
+                    "**Generic:**",
+                    first["is_generic"]
+                )
+
+            st.markdown("---")
+
+            if diagnosis:
+
+                st.subheader("⚠️ Simptome posibile")
+
+                st.write(
+                    diagnosis["symptoms"]
+                )
+
+                st.markdown("---")
+
+                st.subheader("🔎 Cauze posibile")
+
+                st.write(
+                    diagnosis["causes"]
+                )
+
+                st.markdown("---")
+
+                st.subheader("🧪 Verificări recomandate")
+
+                st.write(
+                    diagnosis["checks"]
+                )
+
+                st.markdown("---")
+
+                st.subheader("🔧 Rezolvare")
+
+                st.write(
+                    diagnosis["repair"]
+                )
+
+                st.markdown("---")
+
+                st.subheader("ℹ️ Observații")
+
                 st.info(
-                    """
-                    Codul poate fi:
-                    - specific unui producător
-                    - rar
-                    - sau absent din baza actuală.
-                    """
+                    diagnosis["notes"]
                 )
 
             else:
 
-                (
-                    result_code,
-                    result_manufacturer,
-                    description,
-                    dtc_type,
-                    locale,
-                    is_generic,
-                    source_file
-                ) = result
-
-                st.success(
-                    f"Cod găsit: {result_code}"
-                )
-
-                st.header(
-                    result_code
-                )
-
-                st.subheader(
-                    description
-                )
-
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-
-                    if result_manufacturer == "GENERIC":
-
-                        st.metric(
-                            "Definiție",
-                            "Generic"
-                        )
-
-                    else:
-
-                        st.metric(
-                            "Producător",
-                            result_manufacturer
-                        )
-
-                with col2:
-
-                    st.metric(
-                        "Sistem",
-                        {
-                            "P": "Powertrain",
-                            "B": "Body",
-                            "C": "Chassis",
-                            "U": "Network"
-                        }.get(
-                            dtc_type,
-                            dtc_type
-                        )
-                    )
-
-                with col3:
-
-                    if is_generic:
-
-                        st.metric(
-                            "Tip",
-                            "Generic"
-                        )
-
-                    else:
-
-                        st.metric(
-                            "Tip",
-                            "Manufacturer"
-                        )
-
-                st.divider()
-
-                st.subheader(
-                    "📋 Descriere"
-                )
-
-                st.write(
-                    description
-                )
-
-                st.divider()
-
-                st.subheader(
-                    "🧠 Diagnostic"
+                st.warning(
+                    "Pentru acest cod există descriere în baza DTC, "
+                    "dar încă nu avem o fișă de diagnostic proprie."
                 )
 
                 st.info(
-                    """
-                    În această etapă avem definiția DTC.
-
-                    Următorul modul pe care îl construim va adăuga
-                    simptome, cauze, teste, valori de verificat și
-                    proceduri de reparație.
-                    """
-                )
-
-                st.subheader(
-                    "📚 Sursă"
-                )
-
-                st.caption(
-                    f"Producător: {result_manufacturer}"
-                )
-
-                st.caption(
-                    f"Tip DTC: {dtc_type}"
-                )
-
-                st.caption(
-                    f"Sursă internă: {source_file}"
+                    "Putem adăuga ulterior simptome, cauze, teste și rezolvare."
                 )
 
 
@@ -943,51 +580,53 @@ elif menu == "🔎 DTC Diagnosis":
 # DTC SEARCH
 # =========================================================
 
-elif menu == "🔍 DTC Search":
+elif page == "DTC Search":
 
-    st.title(
-        "🔍 Căutare în baza DTC"
+    st.title("🔎 DTC Search")
+
+    search = st.text_input(
+        "Caută cod sau descriere",
+        placeholder="Exemplu: P0300 sau misfire"
     )
 
-    st.write(
-        """
-        Poți căuta după cod sau după cuvinte din descriere.
-        """
-    )
+    if search:
 
-    keyword = st.text_input(
-        "Caută",
-        placeholder="Exemplu: turbo, pressure, P0299"
-    )
+        conn = get_dtc_connection()
 
-    limit = st.slider(
-        "Număr maxim rezultate",
-        min_value=10,
-        max_value=100,
-        value=25
-    )
+        if conn is None:
 
-    search_button = st.button(
-        "🔍 Caută în baza DTC",
-        type="primary"
-    )
-
-    if search_button:
-
-        if not keyword.strip():
-
-            st.warning(
-                "Introdu un termen de căutare."
+            st.error(
+                "Baza DTC nu a fost găsită."
             )
 
         else:
 
-            results = search_dtc_text(
-                keyword,
-                limit
+            query = """
+                SELECT
+                    code,
+                    manufacturer,
+                    description,
+                    type,
+                    locale,
+                    is_generic
+                FROM dtc_definitions
+                WHERE
+                    UPPER(code) LIKE ?
+                    OR LOWER(description) LIKE ?
+                ORDER BY code
+                LIMIT 200
+            """
+
+            df = pd.read_sql_query(
+                query,
+                conn,
+                params=(
+                    f"%{search.upper()}%",
+                    f"%{search.lower()}%"
+                )
             )
 
-            if results.empty:
+            if df.empty:
 
                 st.warning(
                     "Nu au fost găsite rezultate."
@@ -996,346 +635,87 @@ elif menu == "🔍 DTC Search":
             else:
 
                 st.success(
-                    f"Au fost găsite {len(results)} rezultate."
+                    f"{len(df)} rezultate găsite."
                 )
-
-                results_display = results.copy()
-
-                results_display[
-                    "Tip"
-                ] = results_display[
-                    "type"
-                ].map(
-                    {
-                        "P": "Powertrain",
-                        "B": "Body",
-                        "C": "Chassis",
-                        "U": "Network"
-                    }
-                )
-
-                results_display[
-                    "Definiție"
-                ] = results_display[
-                    "is_generic"
-                ].map(
-                    {
-                        1: "Generic",
-                        0: "Producător"
-                    }
-                )
-
-                results_display = results_display[
-                    [
-                        "code",
-                        "manufacturer",
-                        "description",
-                        "Tip",
-                        "Definiție"
-                    ]
-                ]
-
-                results_display.columns = [
-                    "Cod",
-                    "Producător",
-                    "Descriere",
-                    "Tip",
-                    "Definiție"
-                ]
 
                 st.dataframe(
-                    results_display,
+                    df,
                     use_container_width=True,
                     hide_index=True
                 )
 
 
 # =========================================================
-# VEHICLE SEARCH
-# =========================================================
-
-elif menu == "🚗 Vehicle Search":
-
-    st.title(
-        "🚗 Identificare vehicul"
-    )
-
-    st.write(
-        "Selectează vehiculul."
-    )
-
-    brands = list(
-        VEHICLES.keys()
-    )
-
-    brand = st.selectbox(
-        "1️⃣ Marcă",
-        ["Selectează marca"] + brands
-    )
-
-    if brand != "Selectează marca":
-
-        models = get_models(
-            brand
-        )
-
-        model = st.selectbox(
-            "2️⃣ Model",
-            ["Selectează modelul"] + models
-        )
-
-        if model != "Selectează modelul":
-
-            years = get_years(
-                brand,
-                model
-            )
-
-            year = st.selectbox(
-                "3️⃣ An",
-                ["Selectează anul"] + years
-            )
-
-            if year != "Selectează anul":
-
-                engines = get_engines(
-                    brand,
-                    model,
-                    year
-                )
-
-                engine = st.selectbox(
-                    "4️⃣ Motor",
-                    ["Selectează motorul"] + engines
-                )
-
-                if engine != "Selectează motorul":
-
-                    st.divider()
-
-                    st.success(
-                        "Vehicul selectat"
-                    )
-
-                    col1, col2, col3, col4 = st.columns(4)
-
-                    with col1:
-
-                        st.metric(
-                            "Marcă",
-                            brand
-                        )
-
-                    with col2:
-
-                        st.metric(
-                            "Model",
-                            model
-                        )
-
-                    with col3:
-
-                        st.metric(
-                            "An",
-                            year
-                        )
-
-                    with col4:
-
-                        st.metric(
-                            "Motor",
-                            engine
-                        )
-
-                    st.divider()
-
-                    st.subheader(
-                        "🔎 Diagnostic pentru vehicul"
-                    )
-
-                    st.info(
-                        """
-                        Asocierea exactă dintre vehicul,
-                        motor, ECU și DTC va fi adăugată
-                        în următoarea etapă.
-                        """)
-
-
-# =========================================================
-# REPAIR CASES
-# =========================================================
-
-elif menu == "🧰 Repair Cases":
-
-    st.title(
-        "🧰 Cazuri reale de service"
-    )
-
-    st.markdown(
-        """
-        Aici vom construi baza de experiență reală din service-uri.
-        """
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.subheader(
-            "📋 Date caz"
-        )
-
-        st.markdown(
-            """
-            - Vehicul
-            - Motor
-            - Cod motor
-            - Kilometraj
-            - Coduri DTC
-            - Simptome
-            - Valori live
-            - Teste efectuate
-            """
-        )
-
-    with col2:
-
-        st.subheader(
-            "🛠️ Rezultat"
-        )
-
-        st.markdown(
-            """
-            - Cauză confirmată
-            - Reparație
-            - Piese schimbate
-            - Fotografii
-            - Documente
-            - Rezultat după reparație
-            """
-        )
-
-    st.divider()
-
-    st.warning(
-        "Modulul de cazuri reale va fi conectat la Supabase într-o etapă următoare."
-    )
-
-
-# =========================================================
 # DATABASE
 # =========================================================
 
-elif menu == "📊 Database":
+elif page == "Database":
 
-    st.title(
-        "📊 Baza de date DTC"
-    )
+    st.title("🗄️ Database")
 
-    stats = get_database_statistics()
+    definitions, codes = get_dtc_statistics()
 
-    if stats:
+    st.subheader("DTC Database")
 
-        col1, col2, col3, col4 = st.columns(4)
+    if DTC_DB_PATH.exists():
+
+        st.success(
+            "Baza DTC este disponibilă."
+        )
+
+        col1, col2 = st.columns(2)
 
         with col1:
-
             st.metric(
                 "Coduri unice",
-                f"{stats['unique_codes']:,}"
+                f"{codes:,}"
             )
 
         with col2:
-
             st.metric(
                 "Definiții",
-                f"{stats['total_definitions']:,}"
+                f"{definitions:,}"
             )
-
-        with col3:
-
-            st.metric(
-                "Producători",
-                stats["manufacturers"]
-            )
-
-        with col4:
-
-            st.metric(
-                "Generice",
-                f"{stats['generic_codes']:,}"
-            )
-
-        st.divider()
-
-        st.subheader(
-            "🏭 Producători disponibili"
-        )
-
-        manufacturers = get_manufacturers()
-
-        if manufacturers:
-
-            st.dataframe(
-                pd.DataFrame(
-                    {
-                        "Producător": manufacturers
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True
-            )
-
-        st.divider()
-
-        st.subheader(
-            "🔎 Test rapid DTC"
-        )
-
-        test_code = st.text_input(
-            "Introdu un cod pentru test",
-            placeholder="P0420"
-        )
-
-        if test_code:
-
-            test_result = search_dtc(
-                test_code
-            )
-
-            if test_result:
-
-                (
-                    code,
-                    manufacturer,
-                    description,
-                    dtc_type,
-                    locale,
-                    is_generic,
-                    source_file
-                ) = test_result
-
-                st.success(
-                    f"{code} — {description}"
-                )
-
-            else:
-
-                st.warning(
-                    "Codul nu a fost găsit."
-                )
 
     else:
 
-        show_database_error()
+        st.error(
+            "Fișierul dtc_codes.db nu a fost găsit."
+        )
 
+    st.markdown("---")
 
-# =========================================================
-# FOOTER
-# =========================================================
+    st.subheader("Diagnosis Database")
 
-st.divider()
+    conn = get_diagnosis_connection()
 
-st.caption(
-    "Auto Diagnosis PRO • DTC Diagnosis Platform"
-)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM diagnosis"
+    )
+
+    count = cursor.fetchone()[0]
+
+    st.success(
+        f"Diagnosis database activă — {count} fișe de diagnostic."
+    )
+
+    if count > 0:
+
+        df = pd.read_sql_query(
+            """
+            SELECT
+                dtc_code,
+                title
+            FROM diagnosis
+            ORDER BY dtc_code
+            """,
+            conn
+        )
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
