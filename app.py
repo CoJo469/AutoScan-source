@@ -1006,7 +1006,7 @@ def search_database_table(db_path, table_name, search_term=""):
 # ============================================================
 
 def search_vehicle_generations(make="", model=""):
-    """Afiseaza toate generatiile unui model, inclusiv cele fara motoare catalogate."""
+    """Afiseaza toate generatiile unui model, inclusiv fara motoare asociate."""
     conn = get_external_db(ENGINES_DB_PATH)
     if conn is None:
         return pd.DataFrame()
@@ -1024,7 +1024,6 @@ def search_vehicle_generations(make="", model=""):
         model_make_id = find_existing_column(cols["models"], ["make_id", "manufacturer_id"])
         gen_model_id = find_existing_column(cols["generations"], ["model_id"])
         gen_name = find_existing_column(cols["generations"], ["name", "generation", "title"])
-
         if not all([make_id, make_name, model_id, model_name, model_make_id, gen_model_id]):
             return pd.DataFrame()
 
@@ -1035,10 +1034,10 @@ def search_vehicle_generations(make="", model=""):
         select = [
             f'mk.{quote_identifier(make_name)} AS "Marca"',
             f'mo.{quote_identifier(model_name)} AS "Model"',
-            (f'g.{quote_identifier(gen_name)} AS "Generatie"' if gen_name else "'Generatie necunoscuta' AS "Generatie""),
-            (f'g.{quote_identifier(start_col)} AS "An inceput"' if start_col else "NULL AS "An inceput""),
-            (f'g.{quote_identifier(end_col)} AS "An sfarsit"' if end_col else "NULL AS "An sfarsit""),
-            (f'g.{quote_identifier(body_col)} AS "Caroserie"' if body_col else "NULL AS "Caroserie"")
+            (f'g.{quote_identifier(gen_name)} AS "Generatie"' if gen_name else "'Generatie necunoscuta' AS Generatie"),
+            (f'g.{quote_identifier(start_col)} AS "An inceput"' if start_col else "NULL AS \"An inceput\""),
+            (f'g.{quote_identifier(end_col)} AS "An sfarsit"' if end_col else "NULL AS \"An sfarsit\""),
+            (f'g.{quote_identifier(body_col)} AS "Caroserie"' if body_col else "NULL AS Caroserie")
         ]
         sql = (
             "SELECT " + ", ".join(select) +
@@ -1056,11 +1055,8 @@ def search_vehicle_generations(make="", model=""):
             params.append(f"%{model}%")
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        sql += ' ORDER BY mo."' + model_name.replace('"', '""') + '", '
-        if start_col:
-            sql += f'g.{quote_identifier(start_col)}'
-        else:
-            sql += f'g.{quote_identifier(gen_name or gen_model_id)}'
+        order_column = start_col or gen_name or gen_model_id
+        sql += f" ORDER BY mo.{quote_identifier(model_name)}, g.{quote_identifier(order_column)}"
         return pd.read_sql_query(sql, conn, params=params)
     except Exception as exc:
         st.warning(f"Nu am putut incarca generatiile: {exc}")
