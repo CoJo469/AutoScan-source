@@ -1037,37 +1037,98 @@ def search_engine_catalog(
             params.append(f"%{model}%")
 
         if year:
-            year_columns = [
-                c for c in tables["generations"]
-                if any(x in c.lower() for x in [
-                    "year", "start", "end", "from", "to"
-                ])
-            ]
+            requested_year = safe_int(year)
 
-            if year_columns:
-                year_conditions = []
+            start_column = find_existing_column(
+                tables["generations"],
+                [
+                    "year_start", "start_year", "year_from",
+                    "from_year", "production_start", "production_start_year"
+                ]
+            )
+            end_column = find_existing_column(
+                tables["generations"],
+                [
+                    "year_end", "end_year", "year_to",
+                    "to_year", "production_end", "production_end_year"
+                ]
+            )
+            single_year_column = find_existing_column(
+                tables["generations"],
+                [
+                    "year", "model_year", "production_year",
+                    "generation_year"
+                ]
+            )
 
-                for column in year_columns:
-                    year_conditions.append(
-                        f"CAST(g.{quote_identifier(column)} AS TEXT) LIKE ?"
-                    )
-                    params.append(f"%{year}%")
-
+            if requested_year is not None and start_column and end_column:
+                start_sql = f"CAST(g.{quote_identifier(start_column)} AS INTEGER)"
+                end_sql = f"CAST(g.{quote_identifier(end_column)} AS INTEGER)"
+                end_text = f"LOWER(TRIM(CAST(g.{quote_identifier(end_column)} AS TEXT)))"
                 conditions.append(
-                    "(" + " OR ".join(year_conditions) + ")"
+                    f"({start_sql} <= ? AND ("
+                    f"g.{quote_identifier(end_column)} IS NULL OR "
+                    f"TRIM(CAST(g.{quote_identifier(end_column)} AS TEXT)) = '' OR "
+                    f"{end_sql} >= ? OR {end_text} IN ('present', 'current', 'ongoing')))"
                 )
+                params.extend([requested_year, requested_year])
+
+            elif single_year_column:
+                conditions.append(
+                    f"CAST(g.{quote_identifier(single_year_column)} AS TEXT) LIKE ?"
+                )
+                params.append(f"%{year}%")
+
+            else:
+                # Compatibilitate cu scheme care folosesc alte nume de coloane.
+                year_columns = [
+                    c for c in tables["generations"]
+                    if any(x in c.lower() for x in [
+                        "year", "start", "end", "from", "to"
+                    ])
+                ]
+
+                if year_columns:
+                    year_conditions = []
+                    for column in year_columns:
+                        year_conditions.append(
+                            f"CAST(g.{quote_identifier(column)} AS TEXT) LIKE ?"
+                        )
+                        params.append(f"%{year}%")
+
+                    conditions.append(
+                        "(" + " OR ".join(year_conditions) + ")"
+                    )
 
         if fuel:
             fuel_column = find_existing_column(
                 tables["engines"],
-                ["fuel_type", "fuel", "fuelType"]
+                ["fuel_type", "fuel", "fuelType", "fuel_name"]
             )
 
             if fuel_column:
+                fuel_aliases = {
+                    "petrol": ["petrol", "gasoline", "gas", "benzin", "benzina", "essence"],
+                    "gasoline": ["petrol", "gasoline", "gas", "benzin", "benzina", "essence"],
+                    "diesel": ["diesel", "gasoil"],
+                    "hybrid": ["hybrid", "hev", "phev", "mild hybrid"],
+                    "electric": ["electric", "bev", "ev"],
+                    "lpg": ["lpg", "autogas"],
+                    "cng": ["cng", "natural gas", "methane"]
+                }
+                normalized_fuel = normalize_text(fuel)
+                aliases = fuel_aliases.get(normalized_fuel, [normalized_fuel])
+                fuel_conditions = []
+
+                for alias in aliases:
+                    fuel_conditions.append(
+                        f"LOWER(CAST(e.{quote_identifier(fuel_column)} AS TEXT)) LIKE ?"
+                    )
+                    params.append(f"%{alias}%")
+
                 conditions.append(
-                    f"CAST(e.{quote_identifier(fuel_column)} AS TEXT) LIKE ?"
+                    "(" + " OR ".join(fuel_conditions) + ")"
                 )
-                params.append(f"%{fuel}%")
 
         if engine_search:
             engine_conditions = []
