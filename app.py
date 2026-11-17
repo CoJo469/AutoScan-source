@@ -1917,6 +1917,24 @@ def lookup_local_diagnosis(code):
         conn.close()
 
 
+# ============================================================
+
+def lookup_local_diagnosis(code):
+    """Intoarce explicatiile locale pentru codurile DTC cunoscute."""
+    code = re.sub(r"[^A-Z0-9]", "", str(code or "").upper())
+    if len(code) != 5:
+        return None
+    conn = get_local_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM diagnosis_records WHERE UPPER(dtc_code) = ? LIMIT 1",
+            (code,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def page_dtc_diagnosis():
 
     page_header(
