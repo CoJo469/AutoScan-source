@@ -53,6 +53,24 @@ ENGINES_DB_URL = (
     "releases/latest/download/vehicles.sqlite"
 )
 
+# Baza DTC externa (SQLite) si mostrele publice MechanicDB.
+DTC_DB_URL = (
+    "https://raw.githubusercontent.com/Wal33D/dtc-database/"
+    "main/data/dtc_codes.db"
+)
+MECHANICDB_DIR = DATA_DIR / "mechanicdb"
+MECHANICDB_DIR.mkdir(exist_ok=True)
+MECHANICDB_FIXES_PATH = MECHANICDB_DIR / "dtc_fixes_joined.csv"
+MECHANICDB_PARTS_PATH = MECHANICDB_DIR / "replacement_parts.csv"
+MECHANICDB_FIXES_URL = (
+    "https://raw.githubusercontent.com/MechanicDB/MechanicDB-public/"
+    "main/dtc_fixes_joined.csv"
+)
+MECHANICDB_PARTS_URL = (
+    "https://raw.githubusercontent.com/MechanicDB/MechanicDB-public/"
+    "main/replacement_parts.csv"
+)
+
 # ============================================================
 # INTERFATA
 # ============================================================
@@ -1201,63 +1219,107 @@ def search_dtc(code="", search_term=""):
 
     try:
         tables = get_database_tables(DTC_DB_PATH)
+        frames = []
 
         for table in tables:
-
             columns = get_table_columns(conn, table)
-
             code_col = find_existing_column(
                 columns,
                 ["code", "dtc", "dtc_code", "trouble_code"]
             )
-
             if not code_col:
                 continue
 
-            sql = f"SELECT * FROM {quote_identifier(table)}"
             conditions = []
             params = []
-
             if code:
                 conditions.append(
                     f"UPPER(CAST({quote_identifier(code_col)} AS TEXT)) LIKE ?"
                 )
-                params.append(f"%{code.upper()}%")
+                params.append(f"%{code.upper().strip()}%")
 
             if search_term:
-                searchable = [
-                    c for c in columns
-                    if c != code_col
-                ]
-
+                searchable = [c for c in columns if c != code_col]
                 if searchable:
                     parts = []
-
                     for column in searchable:
                         parts.append(
                             f"CAST({quote_identifier(column)} AS TEXT) LIKE ?"
                         )
-                        params.append(f"%{search_term}%")
+                        params.append(f"%{search_term.strip()}%")
+                    conditions.append("(" + " OR ".join(parts) + ")")
 
-                    conditions.append(
-                        "(" + " OR ".join(parts) + ")"
-                    )
-
+            sql = f"SELECT * FROM {quote_identifier(table)}"
             if conditions:
                 sql += " WHERE " + " AND ".join(conditions)
+            sql += " LIMIT 500"
+            frame = pd.read_sql_query(sql, conn, params=params)
+            if not frame.empty:
+                frames.append(frame)
 
-            return pd.read_sql_query(
-                sql, conn, params=params
-            )
-
-        return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True).drop_duplicates() if frames else pd.DataFrame()
 
     except Exception as exc:
         st.error(f"Eroare baza DTC: {exc}")
         return pd.DataFrame()
-
     finally:
         conn.close()
+
+
+def download_text_dataset(url, destination, required_columns):
+    """Descarca un CSV extern intr-un fisier temporar si il valideaza."""
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".download")
+    try:
+        response = requests.get(url, timeout=(20, 180))
+        response.raise_for_status()
+        if not response.content or len(response.content) < 20:
+            raise ValueError("Fisierul descarcat este gol sau incomplet.")
+        temporary.write_bytes(response.content)
+        frame = pd.read_csv(temporary, sep="|", encoding="utf-8-sig", dtype=str, nrows=5)
+        missing = [column for column in required_columns if column not in frame.columns]
+        if missing:
+            raise ValueError("Lipsesc coloanele obligatorii: " + ", ".join(missing))
+        temporary.replace(destination)
+        return True, f"Fisier descarcat si verificat ({destination.stat().st_size / 1024:.0f} KB)."
+    except Exception as exc:
+        temporary.unlink(missing_ok=True)
+        return False, str(exc)
+
+
+def read_mechanicdb_csv(path):
+    path = Path(path)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        frame = pd.read_csv(path, sep="|", encoding="utf-8-sig", dtype=str, low_memory=False)
+        frame.columns = [str(column).strip() for column in frame.columns]
+        return frame
+    except Exception:
+        return pd.DataFrame()
+
+
+def search_mechanicdb_fixes(code, limit=100):
+    frame = read_mechanicdb_csv(MECHANICDB_FIXES_PATH)
+    if frame.empty or not code:
+        return pd.DataFrame()
+    code_col = find_existing_column(list(frame.columns), ["dtc_code", "code", "trouble_code"])
+    if not code_col:
+        return pd.DataFrame()
+    mask = frame[code_col].astype(str).str.upper().str.strip() == str(code).upper().strip()
+    return frame.loc[mask].head(limit)
+
+
+def search_mechanicdb_parts(code, limit=100):
+    frame = read_mechanicdb_csv(MECHANICDB_PARTS_PATH)
+    if frame.empty or not code:
+        return pd.DataFrame()
+    code_col = find_existing_column(list(frame.columns), ["dtc_code", "code", "trouble_code"])
+    if not code_col:
+        return pd.DataFrame()
+    mask = frame[code_col].astype(str).str.upper().str.strip() == str(code).upper().strip()
+    return frame.loc[mask].head(limit)
 
 
 # ============================================================
@@ -1510,7 +1572,7 @@ def page_dtc_diagnosis():
     if not results.empty:
 
         st.success(
-            f"Au fost gasite {len(results)} inregistrari."
+            f"Au fost gasite {len(results)} inregistrari in baza DTC."
         )
 
         st.dataframe(
@@ -1520,6 +1582,17 @@ def page_dtc_diagnosis():
         )
 
         description = results.to_string(index=False)
+
+        fixes = search_mechanicdb_fixes(st.session_state.get("dtc_current_code", ""))
+        if not fixes.empty:
+            st.markdown("### Proceduri de remediere – mostra MechanicDB")
+            st.caption("Set de mostre publice; nu reprezinta catalogul complet.")
+            st.dataframe(fixes, use_container_width=True, hide_index=True)
+
+        parts = search_mechanicdb_parts(st.session_state.get("dtc_current_code", ""))
+        if not parts.empty:
+            st.markdown("### Piese asociate – mostra MechanicDB")
+            st.dataframe(parts, use_container_width=True, hide_index=True)
 
         diagnosis = st.text_area(
             "Diagnostic stabilit de tehnician"
@@ -2661,6 +2734,38 @@ def page_database_sources():
 
     st.subheader("Descarcare cataloage")
 
+    if st.button("Descarca / actualizeaza baza de coduri DTC", use_container_width=True):
+        with st.spinner("Se descarca baza DTC externa..."):
+            success, message = ensure_external_database(
+                DTC_DB_PATH,
+                DTC_DB_URL,
+                ["dtc_definitions"]
+            )
+        if success:
+            st.success("Baza DTC este instalata. " + message)
+            st.rerun()
+        else:
+            st.error("Descarcarea bazei DTC a esuat: " + message)
+
+    if st.button("Descarca mostrele publice MechanicDB", use_container_width=True):
+        with st.spinner("Se descarca procedurile si piesele MechanicDB..."):
+            fixes_ok, fixes_msg = download_text_dataset(
+                MECHANICDB_FIXES_URL,
+                MECHANICDB_FIXES_PATH,
+                ["dtc_code", "fix_title"]
+            )
+            parts_ok, parts_msg = download_text_dataset(
+                MECHANICDB_PARTS_URL,
+                MECHANICDB_PARTS_PATH,
+                ["fix_id", "part_name"]
+            )
+        if fixes_ok and parts_ok:
+            st.success("Mostrele MechanicDB au fost descarcate.")
+            st.rerun()
+        else:
+            st.error("Proceduri: " + fixes_msg)
+            st.error("Piese: " + parts_msg)
+
     if st.button(
         "Descarca / actualizeaza VehiclesDB",
         use_container_width=True
@@ -2778,7 +2883,13 @@ def page_database_sources():
 
     **DTC Database**
     - Proiect: https://github.com/Wal33D/dtc-database
-    - Verifica licenta proiectului inainte de redistribuire.
+    - Licenta declarata: MIT.
+    - Datasetul public documenteaza 18.805 definitii, 12.128 coduri unice si 33 de marci; valorile se pot modifica intre versiuni.
+
+    **MechanicDB – mostra publica**
+    - Proiect: https://github.com/MechanicDB/MechanicDB-public
+    - Mostra gratuita: 90 coduri DTC si proceduri asociate; nu este baza completa comerciala.
+    - Licenta datelor mostrei: ODbL 1.0, cu atribuire si share-alike.
     """)
 
     st.subheader("Surse adaugate manual")
