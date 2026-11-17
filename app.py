@@ -2755,32 +2755,27 @@ PAGES = [
 ]
 
 
+
 def main():
 
     if "active_page" not in st.session_state:
         st.session_state["active_page"] = PAGES[0]
 
-    current = st.session_state.get(
-        "active_page",
-        PAGES[0]
-    )
-
-    if current not in PAGES:
-        current = PAGES[0]
-
-    if st.session_state.get("main_navigation") != current:
-        st.session_state["main_navigation"] = current
-
     st.sidebar.title("🚗 Auto Diagnosis Pro")
     st.sidebar.caption("Versiunea " + APP_VERSION)
+    st.sidebar.divider()
 
-    selected_page = st.sidebar.radio(
-        "Meniu principal",
-        PAGES,
-        key="main_navigation"
-    )
+    st.sidebar.subheader("Meniu principal")
 
-    st.session_state["active_page"] = selected_page
+    for page in PAGES:
+        if st.sidebar.button(
+            page,
+            key="menu_" + str(PAGES.index(page)),
+            use_container_width=True,
+            type="primary" if st.session_state["active_page"] == page else "secondary"
+        ):
+            st.session_state["active_page"] = page
+            st.rerun()
 
     st.sidebar.divider()
 
@@ -2790,12 +2785,14 @@ def main():
 
     if st.sidebar.button(
         "Reincarca aplicatia",
-        use_container_width=True
+        use_container_width=True,
+        key="reload_app"
     ):
-
         st.cache_data.clear()
         st.cache_resource.clear()
         st.rerun()
+
+    selected_page = st.session_state["active_page"]
 
     if selected_page == "🏠 Dashboard":
         page_dashboard()
@@ -2830,6 +2827,9 @@ def main():
     elif selected_page == "🗄️ Baze de date si surse":
         page_database_sources()
 
+
+if __name__ == "__main__":
+    main()
 
 # ============================================================
 # PORNIRE APLICATIE
